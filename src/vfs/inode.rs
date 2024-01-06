@@ -9,6 +9,7 @@ use alloc::sync::Arc;
 use spin::MutexGuard;
 
 // use self mods
+use super::dentry::{Fentry, Fheader, FileFlags, Fname};
 use super::ffs::{FrontierFileSystem, FS};
 use crate::block::{BlockDevice, BLOCK_CACHE_MANAGER};
 use crate::layout::DiskInode;
@@ -23,33 +24,18 @@ pub struct Inode {
     disk_inode_block_id: u32,
     /// the offset of the disk inode in the block
     disk_inode_block_offset: usize,
+    /// the file flags of the disk inode
+    flags: FileFlags,
     /// the inner mutable instance of the file system
     fs: FS,
     /// the dynamic device to be used
     device: Arc<dyn BlockDevice>,
 }
-// as raw file
+// as common
 impl Inode {
-    /// Create a new Inode
-    ///
-    /// # Arguments
-    /// * inode_bitmap_index: the index of the disk in the bitmap
-    /// * disk_inode_block_id: the block id in the block device
-    /// * disk_indde_block_offset: the offset of the disk inode in the block
-    pub fn new(
-        inode_bitmap_index: u32,
-        disk_inode_block_id: u32,
-        disk_inode_block_offset: usize,
-        fs: &FS,
-        device: &Arc<dyn BlockDevice>,
-    ) -> Self {
-        Self {
-            inode_bitmap_index,
-            disk_inode_block_id,
-            disk_inode_block_offset,
-            fs: Arc::clone(fs),
-            device: Arc::clone(device),
-        }
+    #[inline(always)]
+    pub fn flags(&self) -> FileFlags {
+        self.flags
     }
 
     #[inline(always)]
@@ -135,6 +121,35 @@ impl Inode {
     pub fn leaf_block_count(&self) -> Result<u32> {
         self.read_disk_inode(|disk_inode| disk_inode.leaf_block_count())
     }
+}
+// as file
+impl Inode {
+    /// Create a new Inode as file
+    ///
+    /// # Arguments
+    /// * inode_bitmap_index: the index of the disk in the bitmap
+    /// * disk_inode_block_id: the block id in the block device
+    /// * disk_indde_block_offset: the offset of the disk inode in the block
+    /// * flags: the file flags of the disk inode
+    /// * fs: the inner mutable instance of the file system
+    /// * device: the dynamic device to be used
+    pub fn new_file(
+        inode_bitmap_index: u32,
+        disk_inode_block_id: u32,
+        disk_inode_block_offset: usize,
+        flags: FileFlags,
+        fs: &FS,
+        device: &Arc<dyn BlockDevice>,
+    ) -> Self {
+        Self {
+            inode_bitmap_index,
+            disk_inode_block_id,
+            disk_inode_block_offset,
+            flags,
+            fs: Arc::clone(fs),
+            device: Arc::clone(device),
+        }
+    }
 
     /// clear all blocks in the disk inode as a file.
     /// Be careful, this function does not deallocate the inode
@@ -147,17 +162,20 @@ impl Inode {
         fs.bulk_dealloc_data_block_ids(data_block_ids)
     }
 }
+// as directory
+impl Inode {}
 
 #[cfg(test)]
 mod tests {
     use crate::{block::MockBlockDevice, configs::BLOCK_BYTE_SIZE, vfs::FileSystem};
 
+    use super::super::InitMode;
     use super::*;
 
     #[test]
     fn test_inode_to_byte_size_and_leaf_block_count() {
         let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let fs = FS::initialize(15, 1, &device).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &device).unwrap();
         let inode = fs.root_inode();
         let mut mfs = fs.lock();
         assert_eq!(1, inode.leaf_block_count().unwrap());

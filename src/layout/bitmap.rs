@@ -176,10 +176,10 @@ mod tests {
         let bitmap = Bitmap::new(0, MockBlockDevice::total_block_count(), 10);
         assert!(bitmap
             .alloc(&device)
-            .is_ok_and(|bitmap_index| *bitmap_index == 0));
+            .is_ok_and(|bitmap_index| bitmap_index == 0));
         assert!(bitmap
             .alloc(&device)
-            .is_ok_and(|bitmap_index| *bitmap_index == 1));
+            .is_ok_and(|bitmap_index| bitmap_index == 1));
         assert!(bitmap.dealloc(2, &device).is_err());
         assert!(bitmap.dealloc(0, &device).is_ok());
         assert!(bitmap.dealloc(1, &device).is_ok());

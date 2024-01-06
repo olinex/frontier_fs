@@ -34,13 +34,16 @@ impl BlockCache {
     /// * Err(FFSError(groups(block)))
     fn new(id: usize, device: &Arc<dyn BlockDevice>) -> Result<Self> {
         let mut cache = [0u8; BLOCK_BYTE_SIZE];
-        device.read_block(id, &mut cache)?;
-        Ok(Self {
-            id,
-            cache,
-            device: Arc::clone(device),
-            modified: false,
-        })
+        if let Some(err_code) = device.read_block(id, &mut cache) {
+            Err(FFSError::RawDeviceError(err_code))
+        } else {
+            Ok(Self {
+                id,
+                cache,
+                device: Arc::clone(device),
+                modified: false,
+            })
+        }
     }
 
     /// Get the address of the cached data in memory
@@ -124,10 +127,11 @@ impl BlockCache {
     pub fn sync(&mut self) -> Result<()> {
         if self.modified {
             self.modified = false;
-            self.device.write_block(self.id, &self.cache)
-        } else {
-            Ok(())
-        }
+            if let Some(err_code) = self.device.write_block(self.id, &self.cache) {
+                return Err(FFSError::RawDeviceError(err_code));
+            }
+        };
+        Ok(())
     }
 }
 impl Drop for BlockCache {
@@ -252,23 +256,23 @@ mod tests {
         assert!(BlockCache::new(0, &mock).is_ok());
         assert!(BlockCache::new(MockBlockDevice::total_block_count() - 1, &mock).is_ok());
         assert!(BlockCache::new(MockBlockDevice::total_block_count(), &mock)
-            .is_err_and(|e| e.is_blockoutofbounds()));
+            .is_err_and(|e| e.is_rawdeviceerror()));
     }
 
     #[test]
     fn test_block_read_and_modify() {
         let mock: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
         let mut cache = BlockCache::new(0, &mock).unwrap();
-        assert!(cache.read(0, |v: &u8| *v == 0).is_ok_and(|v| *v));
+        assert!(cache.read(0, |v: &u8| *v == 0).is_ok_and(|v| v));
         assert!(!cache.modified);
         assert!(cache.modify(0, |v: &mut u8| *v = 1).is_ok());
 
         assert!(cache.modified);
-        assert!(cache.read(0, |v: &u8| *v == 1).is_ok_and(|v| *v));
+        assert!(cache.read(0, |v: &u8| *v == 1).is_ok_and(|v| v));
 
         drop(cache);
         let cache = BlockCache::new(0, &mock).unwrap();
-        assert!(cache.read(0, |v: &u8| *v == 1).is_ok_and(|v| *v));
+        assert!(cache.read(0, |v: &u8| *v == 1).is_ok_and(|v| v));
     }
 
     #[test]
@@ -283,6 +287,6 @@ mod tests {
         assert!(BLOCK_CACHE_MANAGER
             .lock()
             .find_droptable_id()
-            .is_some_and(|v| *v == 0));
+            .is_some_and(|v| v == 0));
     }
 }

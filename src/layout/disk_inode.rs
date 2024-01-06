@@ -1308,7 +1308,7 @@ mod tests {
         assert!(inode
             .increase_to_byte_size(1, block_ids[0..1].to_vec(), &device)
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| *id == 0));
+        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
         assert!(inode.get_block_id(1, &device).is_err());
         assert!(inode
             .clear_byte_size(&device)
@@ -1316,7 +1316,7 @@ mod tests {
         assert!(inode
             .increase_to_byte_size(BLOCK_BYTE_SIZE as u64, block_ids[0..1].to_vec(), &device)
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| *id == 0));
+        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
         assert!(inode.get_block_id(1, &device).is_err());
         assert!(inode
             .clear_byte_size(&device)
@@ -1328,8 +1328,8 @@ mod tests {
                 &device
             )
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| *id == 0));
-        assert!(inode.get_block_id(1, &device).is_ok_and(|id| *id == 1));
+        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(1, &device).is_ok_and(|id| id == 1));
         assert!(inode.get_block_id(2, &device).is_err());
         assert!(inode.clear_byte_size(&device).is_ok_and(|block_ids| {
             block_ids.len() == 2 && block_ids[0] == 0 && block_ids[1] == 1
@@ -1368,10 +1368,10 @@ mod tests {
             .is_ok_and(|block_ids| block_ids.len() == 0));
         assert!(inode
             .write_at(0, &write_buffer, &device)
-            .is_ok_and(|size| *size == 3));
+            .is_ok_and(|size| size == 3));
         assert!(inode
             .read_at(0, &mut read_buffer, &device)
-            .is_ok_and(|size| *size == 3));
+            .is_ok_and(|size| size == 3));
         assert_eq!(1, read_buffer[0]);
         assert_eq!(1, read_buffer[1]);
         assert_eq!(1, read_buffer[2]);
@@ -1384,7 +1384,7 @@ mod tests {
             .is_ok_and(|block_ids| block_ids.len() == 0));
         assert!(inode
             .read_at(0, &mut read_buffer, &device)
-            .is_ok_and(|size| *size == 1));
+            .is_ok_and(|size| size == 1));
         assert_eq!(1, read_buffer[0]);
         assert_eq!(0, read_buffer[1]);
         assert_eq!(0, read_buffer[2]);
@@ -1397,7 +1397,7 @@ mod tests {
             .is_ok_and(|block_ids| block_ids.len() == 1 && block_ids[0] == 0));
         assert!(inode
             .read_at(0, &mut read_buffer, &device)
-            .is_ok_and(|size| *size == 0));
+            .is_ok_and(|size| size == 0));
         assert_eq!(0, read_buffer[0]);
         assert_eq!(0, read_buffer[1]);
         assert_eq!(0, read_buffer[2]);
@@ -1417,12 +1417,12 @@ mod tests {
         assert!(inode
             .increase_to_byte_size(1, block_ids[0..1].to_vec(), &device)
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| *id == 0));
+        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
         assert!(inode.get_block_id(1, &device).is_err());
         assert!(inode
             .increase_to_byte_size(BLOCK_BYTE_SIZE as u64, vec![], &device)
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| *id == 0));
+        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
         assert!(inode.get_block_id(1, &device).is_err());
         assert!(inode
             .increase_to_byte_size(
@@ -1431,8 +1431,8 @@ mod tests {
                 &device
             )
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| *id == 0));
-        assert!(inode.get_block_id(1, &device).is_ok_and(|id| *id == 1));
+        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(1, &device).is_ok_and(|id| id == 1));
         assert!(inode.get_block_id(2, &device).is_err());
         assert!(inode
             .increase_to_byte_size(
@@ -1441,14 +1441,14 @@ mod tests {
                 &device
             )
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| *id == 0));
-        assert!(inode.get_block_id(1, &device).is_ok_and(|id| *id == 1));
+        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(1, &device).is_ok_and(|id| id == 1));
         assert!(inode
             .get_block_id(DIRECT_ROOT_BLOCK_COUNT as u32 - 1, &device)
-            .is_ok_and(|id| *id == DIRECT_ROOT_BLOCK_COUNT as u32 - 1));
+            .is_ok_and(|id| id == DIRECT_ROOT_BLOCK_COUNT as u32 - 1));
         assert!(inode
             .get_block_id(DIRECT_ROOT_BLOCK_COUNT as u32, &device)
-            .is_ok_and(|id| *id == DIRECT_ROOT_BLOCK_COUNT as u32 + 1));
+            .is_ok_and(|id| id == DIRECT_ROOT_BLOCK_COUNT as u32 + 1));
         assert!(inode
             .get_block_id(DIRECT_ROOT_BLOCK_COUNT as u32 + 1, &device)
             .is_err());
@@ -1462,24 +1462,24 @@ mod tests {
         let write_buffer = [1u8; BLOCK_BYTE_SIZE + 1];
         assert!(inode
             .read_at(0, &mut read_buffer, &device)
-            .is_ok_and(|size| *size == 0));
+            .is_ok_and(|size| size == 0));
 
         assert!(inode.increase_to_byte_size(1, vec![0], &device).is_ok());
         assert!(inode
             .write_at(0, &write_buffer, &device)
-            .is_ok_and(|size| *size == 1));
+            .is_ok_and(|size| size == 1));
         assert!(inode
             .read_at(0, &mut read_buffer, &device)
-            .is_ok_and(|size| *size == 1));
+            .is_ok_and(|size| size == 1));
         assert_eq!(1, read_buffer[0]);
 
         assert!(inode.increase_to_byte_size(2, vec![], &device).is_ok());
         assert!(inode
             .write_at(0, &write_buffer, &device)
-            .is_ok_and(|size| *size == 2));
+            .is_ok_and(|size| size == 2));
         assert!(inode
             .read_at(0, &mut read_buffer, &device)
-            .is_ok_and(|size| *size == 2));
+            .is_ok_and(|size| size == 2));
         assert_eq!(1, read_buffer[0]);
         assert_eq!(1, read_buffer[1]);
 
@@ -1488,10 +1488,10 @@ mod tests {
             .is_ok());
         assert!(inode
             .write_at(0, &write_buffer, &device)
-            .is_ok_and(|size| *size == (BLOCK_BYTE_SIZE + 1) as u64));
+            .is_ok_and(|size| size == (BLOCK_BYTE_SIZE + 1) as u64));
         assert!(inode
             .read_at(0, &mut read_buffer, &device)
-            .is_ok_and(|size| *size == (BLOCK_BYTE_SIZE + 1) as u64));
+            .is_ok_and(|size| size == (BLOCK_BYTE_SIZE + 1) as u64));
         assert_eq!(1, read_buffer[0]);
         assert_eq!(1, read_buffer[1]);
         assert_eq!(1, read_buffer[BLOCK_BYTE_SIZE]);

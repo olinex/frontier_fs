@@ -2,7 +2,7 @@
 // @time:      2023/11/25
 
 // self mods
-mod directory;
+mod dentry;
 mod ffs;
 mod inode;
 
@@ -12,15 +12,20 @@ mod inode;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-pub use directory::*;
+pub use dentry::*;
 pub use ffs::*;
 pub use inode::*;
 
 use crate::block::BlockDevice;
 use crate::Result;
 
+pub enum InitMode {
+    TotalBlocks(u32),
+    TotalByteSize(u64),
+}
+
 pub trait FileSystem {
     fn root_inode(&self) -> Inode;
-    fn initialize(total_blocks: u32, iabc: u8, device: &Arc<dyn BlockDevice>) -> Result<Box<Self>>;
+    fn initialize(mode: InitMode, iabc: u8, device: &Arc<dyn BlockDevice>) -> Result<Box<Self>>;
     fn open(device: &Arc<dyn BlockDevice>) -> Result<Box<Self>>;
 }

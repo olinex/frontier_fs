@@ -12,20 +12,28 @@ use thiserror_no_std::Error;
 #[derive(Error, EnumGroup, Debug)]
 pub enum FFSError {
     #[groups(device)]
-    #[error("Not valid block device")]
-    NotValidBlockDevice,
+    #[error("Raw device error code: {0}")]
+    RawDeviceError(isize),
+
+    #[groups(device)]
+    #[error("Not valid block device data")]
+    NotValidBlockDeviceData,
+
+    #[groups(device)]
+    #[error("No enough blocks, total blocks must be at least five")]
+    NoEnoughBlocks,
 
     #[groups(block)]
     #[error("No droptable block cache found")]
     NoDroptableBlockCache,
 
     #[groups(block)]
-    #[error("Block {0} out of bounds")]
-    BlockOutOfBounds(usize),
-
-    #[groups(block)]
     #[error("Data out of bounds")]
     DataOutOfBounds,
+
+    #[groups(block)]
+    #[error("Block {0} out of bounds")]
+    BlockOutOfBounds(usize),
 
     #[groups(bitmap)]
     #[error("Bitmap was exhausted which start block id is {0}")]
@@ -47,7 +55,7 @@ pub enum FFSError {
     #[error("Can't delete non-empty directory {0}")]
     DeleteNonEmptyDirectory(u32),
 
-    #[groups(others, parse, core)]
+    #[groups(others, parse)]
     #[error("core error: {0}")]
     ParseUtf8Error(#[from] alloc::str::Utf8Error),
 }

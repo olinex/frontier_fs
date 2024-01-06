@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 // use self mods
-use super::{Directory, FileFlags, FileSystem, Inode};
+use super::{Directory, FileFlags, FileSystem, InitMode, Inode};
 use crate::block::{BlockDevice, BLOCK_CACHE_MANAGER};
 use crate::configs::{BLOCK_BIT_SIZE, BLOCK_BYTE_SIZE};
 use crate::layout::{Bitmap, DataBlock, DiskInode, SuperBlock};
@@ -190,6 +190,38 @@ impl FrontierFileSystem {
         }
     }
 
+    /// Calculates the blocks area structure according to the total bytes size
+    ///
+    /// # Arguments
+    /// * total_byte_size: The bytes size of the data will be written to the device
+    /// * iabc: the average block count of disk inode
+    ///
+    /// # Returns
+    /// (
+    ///     u32: inode bitmap blocks,
+    ///     u32: inode area blocks,
+    ///     u32: data bitmap blocks,
+    ///     u32: data area blocks,
+    ///     u32: used total blocks,
+    ///     u32: disk inodes
+    /// )
+    fn fix_blocks_structure(total_byte_size: u64, iabc: u8) -> (u32, u32, u32, u32, u32, u32) {
+        let block_byte_size = BLOCK_BIT_SIZE as u64;
+        let data_area_blocks = ((total_byte_size + block_byte_size - 1) / block_byte_size) as u32;
+        let data_bitmap_blocks = Self::cal_data_bitmap_blocks(data_area_blocks);
+        let disk_inodes = Self::cal_disk_inodes(data_area_blocks, iabc);
+        let inode_area_blocks = Self::cal_inode_area_blocks(disk_inodes);
+        let inode_bitmap_blocks = Self::cal_inode_bitmap_blocks(disk_inodes);
+        (
+            inode_bitmap_blocks,
+            inode_area_blocks,
+            data_bitmap_blocks,
+            data_area_blocks,
+            1 + inode_bitmap_blocks + inode_area_blocks + data_bitmap_blocks + data_area_blocks,
+            disk_inodes,
+        )
+    }
+
     /// Calculates the disk inode's position by the bitmap index of the inode.
     ///
     /// # Arguments
@@ -256,23 +288,16 @@ impl FrontierFileSystem {
     /// * Err(other FFSError)
     pub fn bulk_alloc_data_block_ids(&mut self, blocks_needed: u32) -> Result<Vec<u32>> {
         let mut data_block_ids = Vec::new();
-        let mut error = None;
         for _ in 0..blocks_needed {
             match self.alloc_data_block_id() {
                 Ok(block_id) => data_block_ids.push(block_id),
                 Err(err) => {
-                    error = Some(err);
-                    break;
+                    self.bulk_dealloc_data_block_ids(data_block_ids)?;
+                    return Err(err);
                 }
             }
         }
-        if data_block_ids.len() == blocks_needed as usize {
-            Ok(data_block_ids)
-        } else if self.bulk_dealloc_data_block_ids(data_block_ids).is_ok() {
-            Err(error.unwrap())
-        } else {
-            Err(FFSError::NotValidBlockDevice)
-        }
+        Ok(data_block_ids)
     }
 
     /// Deallocate an used data block to bitmap
@@ -372,67 +397,71 @@ impl FileSystem for FS {
     /// * total_blocks: the total count of the blocks can be used
     /// * iabc: the avarage block count of the inode
     /// * device: the dynamic device to be used
-    fn initialize(total_blocks: u32, iabc: u8, device: &Arc<dyn BlockDevice>) -> Result<Box<Self>> {
-        if let Some((
+    fn initialize(mode: InitMode, iabc: u8, device: &Arc<dyn BlockDevice>) -> Result<Box<Self>> {
+        let (
             inode_bitmap_blocks,
             inode_area_blocks,
             data_bitmap_blocks,
             data_area_blocks,
             used_total_blocks,
             disk_inodes,
-        )) = FrontierFileSystem::recommended_blocks_structure(total_blocks, iabc)
-        {
-            let mut ffs = FrontierFileSystem::new(
-                inode_bitmap_blocks,
-                inode_area_blocks,
-                data_bitmap_blocks,
-                data_area_blocks,
-                disk_inodes,
-                device,
-            );
-            for i in 0..used_total_blocks {
-                BLOCK_CACHE_MANAGER
-                    .get_cache(i as usize, device)?
-                    .lock()
-                    .modify(0, |data_block: &mut DataBlock| {
-                        for byte in data_block.iter_mut() {
-                            *byte = 0;
-                        }
-                    })?;
+        ) = match mode {
+            InitMode::TotalBlocks(total_blocks) => {
+                FrontierFileSystem::recommended_blocks_structure(total_blocks, iabc)
+                    .ok_or(FFSError::NoEnoughBlocks)?
             }
-            BLOCK_CACHE_MANAGER.get_cache(0, device)?.lock().modify(
-                0,
-                |super_block: &mut SuperBlock| {
-                    super_block.initialize(
-                        used_total_blocks,
-                        inode_bitmap_blocks,
-                        inode_area_blocks,
-                        data_bitmap_blocks,
-                        data_area_blocks,
-                        disk_inodes,
-                        iabc,
-                    );
-                },
-            )?;
-            assert_eq!(ffs.alloc_inode_bitmap_index()?, 0);
-            let (root_inode_block_id, root_inode_offset) = ffs.cal_disk_inode_position(0);
+            InitMode::TotalByteSize(total_byte_size) => {
+                FrontierFileSystem::fix_blocks_structure(total_byte_size, iabc)
+            }
+        };
+        let mut ffs = FrontierFileSystem::new(
+            inode_bitmap_blocks,
+            inode_area_blocks,
+            data_bitmap_blocks,
+            data_area_blocks,
+            disk_inodes,
+            device,
+        );
+        for i in 0..used_total_blocks {
             BLOCK_CACHE_MANAGER
-                .get_cache(root_inode_block_id as usize, device)?
+                .get_cache(i as usize, device)?
                 .lock()
-                .modify(root_inode_offset, |disk_inode: &mut DiskInode| {
-                    disk_inode.initialize();
+                .modify(0, |data_block: &mut DataBlock| {
+                    for byte in data_block.iter_mut() {
+                        *byte = 0;
+                    }
                 })?;
-            let fs = Arc::new(Mutex::new(ffs));
-            let root_inode = fs.root_inode();
-            let root_dir = Directory::new(root_inode);
-            let flags = FileFlags::IS_DIR;
-            let mut mfs = fs.lock();
-            root_dir.initialize(0, flags, flags, &mut mfs)?;
-            drop(mfs);
-            Ok(Box::new(fs))
-        } else {
-            Err(FFSError::NotValidBlockDevice)
         }
+        BLOCK_CACHE_MANAGER.get_cache(0, device)?.lock().modify(
+            0,
+            |super_block: &mut SuperBlock| {
+                super_block.initialize(
+                    used_total_blocks,
+                    inode_bitmap_blocks,
+                    inode_area_blocks,
+                    data_bitmap_blocks,
+                    data_area_blocks,
+                    disk_inodes,
+                    iabc,
+                );
+            },
+        )?;
+        assert_eq!(ffs.alloc_inode_bitmap_index()?, 0);
+        let (root_inode_block_id, root_inode_offset) = ffs.cal_disk_inode_position(0);
+        BLOCK_CACHE_MANAGER
+            .get_cache(root_inode_block_id as usize, device)?
+            .lock()
+            .modify(root_inode_offset, |disk_inode: &mut DiskInode| {
+                disk_inode.initialize();
+            })?;
+        let fs = Arc::new(Mutex::new(ffs));
+        let root_inode = fs.root_inode();
+        let root_dir = Directory::new(root_inode);
+        let flags = FileFlags::IS_DIR;
+        let mut mfs = fs.lock();
+        root_dir.initialize(0, flags, flags, &mut mfs)?;
+        drop(mfs);
+        Ok(Box::new(fs))
     }
 
     /// Open an initialized block device as the file system by the block distribution in super block,
@@ -456,7 +485,7 @@ impl FileSystem for FS {
                     );
                     Ok(Box::new(Arc::new(Mutex::new(ffs))))
                 } else {
-                    Err(FFSError::NotValidBlockDevice)
+                    Err(FFSError::NotValidBlockDeviceData)
                 }
             })?
     }
@@ -591,49 +620,49 @@ mod tests {
     fn test_ffs_initialize_and_open() {
         BLOCK_CACHE_MANAGER.clear();
         let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        assert!(FS::initialize(5, 1, &device).is_ok());
+        assert!(FS::initialize(InitMode::TotalBlocks(5), 1, &device).is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(5, 2, &device).is_ok());
+        assert!(FS::initialize(InitMode::TotalBlocks(5), 2, &device).is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(6, 2, &device).is_ok());
+        assert!(FS::initialize(InitMode::TotalBlocks(6), 2, &device).is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(PER_BLOCK_DISK_INODE_COUNT as u32, 1, &device).is_ok());
+        assert!(FS::initialize(InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32), 1, &device).is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(PER_BLOCK_DISK_INODE_COUNT as u32 + 3, 1, &device).is_ok());
+        assert!(FS::initialize(InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 3), 1, &device).is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(PER_BLOCK_DISK_INODE_COUNT as u32 + 4, 1, &device).is_ok());
+        assert!(FS::initialize(InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 4), 1, &device).is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(PER_BLOCK_DISK_INODE_COUNT as u32 + 6, 1, &device).is_ok());
+        assert!(FS::initialize(InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 6), 1, &device).is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());

@@ -3,9 +3,11 @@
 
 // self mods
 
-use alloc::collections::BTreeSet;
-use bit_field::BitField;
 // use other mods
+use alloc::collections::BTreeSet;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use bit_field::BitField;
 use sha2::{Digest, Sha256};
 use spin::MutexGuard;
 
@@ -38,10 +40,14 @@ bitflags! {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Fheader {
+pub struct Fheader {
     next_leaf_indexes: [u32; HASH_GROUP_COUNT],
 }
 impl Fheader {
+    fn cal_start_offset(leaf_index: u32) -> u64 {
+        leaf_index as u64 * BLOCK_BYTE_SIZE as u64
+    }
+
     fn empty() -> Self {
         Self {
             next_leaf_indexes: [0; HASH_GROUP_COUNT],
@@ -78,12 +84,20 @@ pub struct Fname {
     length: u8,
 }
 impl Fname {
+    fn cal_start_offset(leaf_index: u32, hash_index: usize, item_index: usize) -> u64 {
+        Fentry::cal_start_offset(leaf_index, hash_index, item_index) + FENTRY_BYTE_SIZE as u64
+    }
+
     fn cal_hash(bytes: &[u8]) -> [u8; NAME_HASH_BYTE_SIZE] {
         let mut name_hash = [0; NAME_HASH_BYTE_SIZE];
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         name_hash.copy_from_slice(&hasher.finalize());
         name_hash
+    }
+
+    fn cal_hash_index(byte: u8) -> usize {
+        byte.get_bits(0..2) as usize
     }
 
     fn cal_name_hash(name: &str) -> [u8; NAME_HASH_BYTE_SIZE] {
@@ -148,6 +162,13 @@ pub struct Fentry {
     next_hash_byte: u8,
 }
 impl Fentry {
+    fn cal_start_offset(leaf_index: u32, hash_index: usize, item_index: usize) -> u64 {
+        Fheader::cal_start_offset(leaf_index)
+            + FHEADER_BYTE_SIZE as u64
+            + ((hash_index as u64 * HASH_GROUP_ITEM_COUNT as u64 + item_index as u64)
+                * (FENTRY_BYTE_SIZE + FNAME_BYTE_SIZE) as u64)
+    }
+
     /// Create a new empty file entry
     fn empty() -> Self {
         Self {
@@ -202,25 +223,6 @@ impl AsBytesMut for Fentry {
 
 pub struct Directory(Inode);
 impl Directory {
-    fn cal_fheader_start_offset(leaf_index: u32) -> u64 {
-        leaf_index as u64 * BLOCK_BYTE_SIZE as u64
-    }
-
-    fn cal_fentry_start_offset(leaf_index: u32, hash_index: usize, item_index: usize) -> u64 {
-        Self::cal_fheader_start_offset(leaf_index)
-            + FHEADER_BYTE_SIZE as u64
-            + ((hash_index as u64 * HASH_GROUP_ITEM_COUNT as u64 + item_index as u64)
-                * (FENTRY_BYTE_SIZE + FNAME_BYTE_SIZE) as u64)
-    }
-
-    fn cal_fname_start_offset(leaf_index: u32, hash_index: usize, item_index: usize) -> u64 {
-        Self::cal_fentry_start_offset(leaf_index, hash_index, item_index) + FENTRY_BYTE_SIZE as u64
-    }
-
-    fn cal_hash_index(byte: u8) -> usize {
-        byte.get_bits(0..2) as usize
-    }
-
     pub fn new(inode: Inode) -> Self {
         Self(inode)
     }
@@ -237,21 +239,21 @@ impl Directory {
                 .to_byte_size(BLOCK_BYTE_SIZE as u64, disk_inode, fs)?;
             // insert self as child directory
             let hash_bytes = Fname::cal_name_hash(SELF_FNAME_STR);
-            let hash_index = Self::cal_hash_index(hash_bytes[0]);
+            let hash_index = Fname::cal_hash_index(hash_bytes[0]);
             let fentry = Fentry::new(self.0.inode_bitmap_index(), self_flags, hash_bytes[1]);
-            let start_offset = Self::cal_fentry_start_offset(0, hash_index, 0);
+            let start_offset = Fentry::cal_start_offset(0, hash_index, 0);
             disk_inode.write_at(start_offset, fentry.as_bytes(), self.0.device())?;
             let fname = Fname::new(SELF_FNAME_STR);
-            let start_offset = Self::cal_fname_start_offset(0, hash_index, 0);
+            let start_offset = Fname::cal_start_offset(0, hash_index, 0);
             disk_inode.write_at(start_offset, fname.as_bytes(), self.0.device())?;
             // insert parent as child directory
             let hash_bytes = Fname::cal_name_hash(PARENT_FNAME_STR);
-            let hash_index = Self::cal_hash_index(hash_bytes[0]);
+            let hash_index = Fname::cal_hash_index(hash_bytes[0]);
             let fentry = Fentry::new(parent_inode_bitmap_index, parent_flags, hash_bytes[1]);
-            let start_offset = Self::cal_fentry_start_offset(0, hash_index, 0);
+            let start_offset = Fentry::cal_start_offset(0, hash_index, 0);
             disk_inode.write_at(start_offset, fentry.as_bytes(), self.0.device())?;
             let fname = Fname::new(SELF_FNAME_STR);
-            let start_offset = Self::cal_fname_start_offset(0, hash_index, 0);
+            let start_offset = Fname::cal_start_offset(0, hash_index, 0);
             disk_inode.write_at(start_offset, fname.as_bytes(), self.0.device())?;
             Ok(())
         })?
@@ -264,15 +266,13 @@ impl Directory {
         for leaf_index in 0..total_leaf_indexes {
             for hash_index in 0..HASH_GROUP_COUNT {
                 for item_index in 0..HASH_GROUP_ITEM_COUNT {
-                    let start_offset =
-                        Self::cal_fname_start_offset(leaf_index, hash_index, item_index);
+                    let start_offset = Fname::cal_start_offset(leaf_index, hash_index, item_index);
                     self.read_child(&mut fname, start_offset)?;
                     let name = fname.to_str();
                     if name == SELF_FNAME_STR || name == PARENT_FNAME_STR {
                         continue;
                     }
-                    let start_offset =
-                        Self::cal_fentry_start_offset(leaf_index, hash_index, item_index);
+                    let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
                     self.read_child(&mut fentry, start_offset)?;
                     if fentry.is_valid() {
                         return Ok(false);
@@ -290,6 +290,7 @@ impl Directory {
             fentry.inode_bitmap_index,
             disk_inode_block_id,
             disk_inode_block_offset,
+            self.0.flags(),
             self.0.fs(),
             self.0.device(),
         )
@@ -339,10 +340,22 @@ impl Directory {
         Ok(self.get_child_entry(SELF_FNAME_STR)?.unwrap())
     }
 
+    pub fn get_child_inode(
+        &self,
+        name: &str,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<Option<(Fname, Inode)>> {
+        if let Some((fname, fentry)) = self.get_child_entry(name)? {
+            Ok(Some((fname, self.convert_to_inode(&fentry, fs))))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn get_child_entry(&self, name: &str) -> Result<Option<(Fname, Fentry)>> {
         let hash = Fname::cal_name_hash(name);
         let mut hash_byte = hash[0];
-        let mut hash_index = Self::cal_hash_index(hash_byte);
+        let mut hash_index = Fname::cal_hash_index(hash_byte);
         let mut leaf_index = 0;
         let mut fentry = Fentry::empty();
         let mut fname = Fname::empty();
@@ -350,8 +363,7 @@ impl Directory {
         for depth in 0..DENTRY_MAX_DEPTH {
             let next_hash_byte = hash[depth + 1];
             for item_index in 0..HASH_GROUP_ITEM_COUNT {
-                let start_offset =
-                    Self::cal_fentry_start_offset(leaf_index, hash_index, item_index);
+                let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
                 self.read_child(&mut fentry, start_offset)?;
                 if !fentry.is_valid() {
                     return Ok(None);
@@ -359,17 +371,17 @@ impl Directory {
                 if fentry.next_hash_byte != next_hash_byte {
                     continue;
                 }
-                let start_offset = Self::cal_fname_start_offset(leaf_index, hash_index, item_index);
+                let start_offset = Fname::cal_start_offset(leaf_index, hash_index, item_index);
                 self.read_child(&mut fname, start_offset)?;
                 if !fname.is_equal(name) {
                     continue;
                 }
                 return Ok(Some((fname, fentry)));
             }
-            let start_offset = Self::cal_fheader_start_offset(leaf_index);
+            let start_offset = Fheader::cal_start_offset(leaf_index);
             self.read_child(&mut fheader, start_offset)?;
             hash_byte = next_hash_byte;
-            hash_index = Self::cal_hash_index(hash_byte);
+            hash_index = Fname::cal_hash_index(hash_byte);
             leaf_index = fheader.next_leaf_indexes[hash_index];
             if leaf_index == 0 {
                 return Ok(None);
@@ -378,11 +390,55 @@ impl Directory {
         Ok(None)
     }
 
-    pub fn create_child_entry(&self, name: &str, flags: FileFlags) -> Result<(Fname, Fentry)> {
-        let mut fs = self.0.fs().lock();
+    pub fn list_child_name(&self) -> Result<Vec<String>> {
+        let leaf_block_indexes = self.0.leaf_block_count()?;
+        let mut names = Vec::new();
+        let mut fentry = Fentry::empty();
+        let mut fname = Fname::empty();
+        for leaf_index in 0..leaf_block_indexes {
+            for hash_index in 0..HASH_GROUP_COUNT {
+                for item_index in 0..HASH_GROUP_ITEM_COUNT {
+                    let fentry_start_offset =
+                        Fentry::cal_start_offset(leaf_index, hash_index, item_index);
+                    self.read_child(&mut fentry, fentry_start_offset)?;
+                    if !fentry.is_valid() {
+                        continue;
+                    }
+                    let fname_start_offset =
+                        Fname::cal_start_offset(leaf_index, hash_index, item_index);
+                    self.write_child(&mut fname, fname_start_offset)?;
+                    names.push(fname.to_str().to_string())
+                }
+            }
+        }
+        Ok(names)
+    }
+
+    pub fn create_child_inode(
+        &self,
+        name: &str,
+        flags: FileFlags,
+        buffer: &[u8],
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<(Fname, Inode)> {
+        let (fname, fentry) = self.create_child_entry(name, flags, fs)?;
+        let inode = self.convert_to_inode(&fentry, fs);
+        inode.modify_disk_inode(|disk_inode| {
+            inode.to_byte_size(buffer.len() as u64, disk_inode, fs)?;
+            disk_inode.write_at(0, buffer, self.0.device())
+        })??;
+        Ok((fname, inode))
+    }
+
+    pub fn create_child_entry(
+        &self,
+        name: &str,
+        flags: FileFlags,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<(Fname, Fentry)> {
         let hash = Fname::cal_name_hash(name);
         let mut hash_byte = hash[0];
-        let mut hash_index = Self::cal_hash_index(hash_byte);
+        let mut hash_index = Fname::cal_hash_index(hash_byte);
         let mut leaf_index = 0;
         let mut fentry = Fentry::empty();
         let mut fname = Fname::empty();
@@ -391,9 +447,9 @@ impl Directory {
             let next_hash_byte = hash[depth + 1];
             for item_index in 0..HASH_GROUP_ITEM_COUNT {
                 let fentry_start_offset =
-                    Self::cal_fentry_start_offset(leaf_index, hash_index, item_index);
+                    Fentry::cal_start_offset(leaf_index, hash_index, item_index);
                 let fname_start_offset =
-                    Self::cal_fname_start_offset(leaf_index, hash_index, item_index);
+                    Fname::cal_start_offset(leaf_index, hash_index, item_index);
                 self.read_child(&mut fentry, fentry_start_offset)?;
                 if !fentry.is_valid() {
                     let inode_bitmap_index = fs.alloc_inode_bitmap_index()?;
@@ -401,17 +457,12 @@ impl Directory {
                     fname = Fname::new(name);
                     self.write_child(&mut fentry, fentry_start_offset)?;
                     self.write_child(&mut fname, fname_start_offset)?;
-                    let inode = self.convert_to_inode(&fentry, &mut fs);
+                    let inode = self.convert_to_inode(&fentry, fs);
                     inode.modify_disk_inode(|disk_inode| disk_inode.initialize())?;
                     if flags.contains(FileFlags::IS_DIR) {
                         let (_, self_entry) = self.self_entry()?;
                         let dir = Directory::new(inode);
-                        dir.initialize(
-                            self.0.inode_bitmap_index(),
-                            flags,
-                            self_entry.flags,
-                            &mut fs,
-                        )?;
+                        dir.initialize(self.0.inode_bitmap_index(), flags, self_entry.flags, fs)?;
                     }
                     return Ok((fname, fentry));
                 }
@@ -423,16 +474,16 @@ impl Directory {
                     return Err(FFSError::DuplicatedFname(fentry.inode_bitmap_index));
                 }
             }
-            let fheader_start_offset = Self::cal_fheader_start_offset(leaf_index);
+            let fheader_start_offset = Fheader::cal_start_offset(leaf_index);
             self.read_child(&mut fheader, fheader_start_offset)?;
             hash_byte = next_hash_byte;
-            hash_index = Self::cal_hash_index(hash_byte);
+            hash_index = Fname::cal_hash_index(hash_byte);
             leaf_index = fheader.next_leaf_indexes[hash_index];
             if leaf_index != 0 {
                 continue;
             }
             if depth != (DENTRY_MAX_DEPTH - 1) {
-                leaf_index = self.increase_block(&mut fs)?;
+                leaf_index = self.increase_block(fs)?;
                 fheader.next_leaf_indexes[hash_index] = leaf_index;
                 self.write_child(&mut fheader, fheader_start_offset)?;
                 continue;
@@ -442,14 +493,17 @@ impl Directory {
         Err(FFSError::DataOutOfBounds)
     }
 
-    pub fn remove_child_entry(&self, name: &str) -> Result<()> {
+    pub fn remove_child_entry(
+        &self,
+        name: &str,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<()> {
         if name == SELF_FNAME_STR || name == PARENT_FNAME_STR {
             return Err(FFSError::FnameDoesNotExist(self.0.inode_bitmap_index()));
         }
-        let mut fs = self.0.fs().lock();
         let hash = Fname::cal_name_hash(name);
         let mut hash_byte = hash[0];
-        let mut hash_index = Self::cal_hash_index(hash_byte);
+        let mut hash_index = Fname::cal_hash_index(hash_byte);
         let mut last_leaf_index = 0;
         let mut fentry = Fentry::empty();
         let mut fname = Fname::empty();
@@ -463,9 +517,9 @@ impl Directory {
             let next_hash_byte = hash[depth + 1];
             for item_index in 0..HASH_GROUP_ITEM_COUNT {
                 let fentry_start_offset =
-                    Self::cal_fentry_start_offset(last_leaf_index, hash_index, item_index);
+                    Fentry::cal_start_offset(last_leaf_index, hash_index, item_index);
                 let fname_start_offset =
-                    Self::cal_fname_start_offset(last_leaf_index, hash_index, item_index);
+                    Fname::cal_start_offset(last_leaf_index, hash_index, item_index);
                 self.read_child(&mut fentry, fentry_start_offset)?;
                 if founded {
                     if fentry.is_valid() {
@@ -486,7 +540,7 @@ impl Directory {
                         continue;
                     }
                     if fentry.is_dir()
-                        && !Self::new(self.convert_to_inode(&fentry, &mut fs)).is_empty()?
+                        && !Self::new(self.convert_to_inode(&fentry, fs)).is_empty()?
                     {
                         return Err(FFSError::DeleteNonEmptyDirectory(fentry.inode_bitmap_index));
                     }
@@ -495,10 +549,10 @@ impl Directory {
                     founded = true;
                 }
             }
-            let start_offset = Self::cal_fheader_start_offset(last_leaf_index);
+            let start_offset = Fheader::cal_start_offset(last_leaf_index);
             self.read_child(&mut fheader, start_offset)?;
             hash_byte = next_hash_byte;
-            hash_index = Self::cal_hash_index(hash_byte);
+            hash_index = Fname::cal_hash_index(hash_byte);
             let current_leaf_index = fheader.next_leaf_indexes[hash_index];
             if current_leaf_index == 0 {
                 break;
@@ -511,8 +565,8 @@ impl Directory {
         // dealloc the entry's disk inode
         self.read_child(&mut fentry, dst_fentry_start_offset)?;
         fs.dealloc_inode_bitmap_index(fentry.inode_bitmap_index)?;
-        let inode = self.convert_to_inode(&fentry, &mut fs);
-        inode.clear_as_file(&mut fs)?;
+        let inode = self.convert_to_inode(&fentry, fs);
+        inode.clear_as_file(fs)?;
         // find the prossible existing child in the last leaf index which can relpace the deleted child
         if src_fentry_start_offset != 0 && src_fname_start_offset != 0 {
             self.read_child(&mut fentry, src_fentry_start_offset)?;
@@ -526,7 +580,7 @@ impl Directory {
             self.write_child(&mut Fname::empty(), dst_fname_start_offset)?;
         }
         // try to release the last leaf index if it is empty
-        self.clear_empty_ending_leaf_indexes(&mut fs)
+        self.clear_empty_ending_leaf_indexes(fs)
     }
 
     fn clear_empty_ending_leaf_indexes(
@@ -539,8 +593,7 @@ impl Directory {
         'outter: for leaf_index in (0..total_leaf_indexes).rev() {
             for hash_index in 0..HASH_GROUP_COUNT {
                 for item_index in 0..HASH_GROUP_ITEM_COUNT {
-                    let start_offset =
-                        Self::cal_fentry_start_offset(leaf_index, hash_index, item_index);
+                    let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
                     self.read_child(&mut fentry, start_offset)?;
                     if fentry.is_valid() {
                         break 'outter;
@@ -565,7 +618,7 @@ impl Directory {
             clear_leaf_indexes.insert(clear_leaf_index);
         }
         for inused_leaf_index in (0..inused_leaf_indexes).rev() {
-            let start_offset = Self::cal_fheader_start_offset(inused_leaf_index);
+            let start_offset = Fheader::cal_start_offset(inused_leaf_index);
             let mut founded = false;
             self.read_child(&mut fheader, start_offset)?;
             for index in 0..HASH_GROUP_ITEM_COUNT {
@@ -594,7 +647,7 @@ mod tests {
     use alloc::{string::ToString, sync::Arc, vec};
 
     use super::super::ffs::FS;
-    use super::super::FileSystem;
+    use super::super::{FileSystem, InitMode};
     use super::*;
 
     use crate::block::{BlockDevice, MockBlockDevice};
@@ -630,18 +683,19 @@ mod tests {
     fn test_dir_create_and_get_and_remove_child_entry() {
         let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
         // let disk_inode = DiskInode::get(0, 0, &device).unwrap();
-        let fs = FS::initialize(15, 1, &device).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &device).unwrap();
         let inode = fs.root_inode();
+        let mut mfs = fs.lock();
         let dir = Directory::new(inode);
         // test get and delete entry from empty directory
         assert!(dir.get_child_entry("test").is_ok_and(|i| i.is_none()));
         assert!(dir
-            .remove_child_entry("test")
+            .remove_child_entry("test", &mut mfs)
             .is_err_and(|e| e.is_fnamedoesnotexist()));
         assert_eq!(dir.0.leaf_block_count().unwrap(), 1);
         // test insert and delete entry into empty directory
         assert!(dir
-            .create_child_entry("test", FileFlags::empty())
+            .create_child_entry("test", FileFlags::empty(), &mut mfs)
             .is_ok_and(|i| i.0.to_str() == "test"
                 && i.1.is_valid()
                 && !i.1.is_dir()
@@ -655,11 +709,11 @@ mod tests {
                 && !i.1.is_dir()
                 && i.1.inode_bitmap_index == 1));
         assert_eq!(dir.0.leaf_block_count().unwrap(), 1);
-        assert!(dir.remove_child_entry("test").is_ok());
+        assert!(dir.remove_child_entry("test", &mut mfs).is_ok());
         assert_eq!(dir.0.leaf_block_count().unwrap(), 1);
         // test insert entry into a non-empty directory
         assert!(dir
-            .create_child_entry("other", FileFlags::IS_DIR)
+            .create_child_entry("other", FileFlags::IS_DIR, &mut mfs)
             .is_ok_and(|i| i.0.to_str() == "other"
                 && i.1.is_valid()
                 && i.1.is_dir()
@@ -672,7 +726,7 @@ mod tests {
                 && i.1.is_valid()
                 && i.1.is_dir()
                 && i.1.inode_bitmap_index == 1));
-        assert!(dir.0.leaf_block_count().is_ok_and(|i| *i == 1));
+        assert!(dir.0.leaf_block_count().is_ok_and(|i| i == 1));
         // test insert same hash byte fentry into directory
         // number in list have the same prefix hash byte 9f with "test"
         // those number name files will be stored in the leaf indexes [0, 0, 0, 0, 1, 2, 3, 2, 3]
@@ -681,7 +735,7 @@ mod tests {
             .enumerate()
         {
             assert!(dir
-                .create_child_entry(x.to_string().as_str(), FileFlags::empty())
+                .create_child_entry(x.to_string().as_str(), FileFlags::empty(), &mut mfs)
                 .is_ok_and(|i| i.0.to_str() == x.to_string().as_str()
                     && i.1.is_valid()
                     && !i.1.is_dir()
@@ -690,27 +744,27 @@ mod tests {
         assert_eq!(dir.0.leaf_block_count().unwrap(), 4);
 
         assert!(dir.get_child_entry("803").unwrap().is_some());
-        assert!(dir.remove_child_entry("803").is_ok());
+        assert!(dir.remove_child_entry("803", &mut mfs).is_ok());
         assert!(dir.get_child_entry("803").unwrap().is_none());
         assert_eq!(dir.0.leaf_block_count().unwrap(), 4);
 
         assert!(dir.get_child_entry("2167").unwrap().is_some());
-        assert!(dir.remove_child_entry("2167").is_ok());
+        assert!(dir.remove_child_entry("2167", &mut mfs).is_ok());
         assert!(dir.get_child_entry("2167").unwrap().is_none());
         assert_eq!(dir.0.leaf_block_count().unwrap(), 4);
 
         assert!(dir.get_child_entry("1764").unwrap().is_some());
-        assert!(dir.remove_child_entry("1764").is_ok());
+        assert!(dir.remove_child_entry("1764", &mut mfs).is_ok());
         assert!(dir.get_child_entry("1764").unwrap().is_none());
         assert_eq!(dir.0.leaf_block_count().unwrap(), 4);
 
         assert!(dir.get_child_entry("1500").unwrap().is_some());
-        assert!(dir.remove_child_entry("1500").is_ok());
+        assert!(dir.remove_child_entry("1500", &mut mfs).is_ok());
         assert!(dir.get_child_entry("1500").unwrap().is_none());
         assert_eq!(dir.0.leaf_block_count().unwrap(), 3);
 
         assert!(dir.get_child_entry("1084").unwrap().is_some());
-        assert!(dir.remove_child_entry("1084").is_ok());
+        assert!(dir.remove_child_entry("1084", &mut mfs).is_ok());
         assert!(dir.get_child_entry("1084").unwrap().is_none());
         assert_eq!(dir.0.leaf_block_count().unwrap(), 1);
     }

@@ -1,8 +1,6 @@
 // @author:    olinex
 // @time:      2023/11/03
 #![no_std]
-#![feature(map_first_last)]
-#![feature(is_some_with)]
 
 // self mods
 pub mod block;
