@@ -3,14 +3,14 @@
 
 // self mods
 
-use alloc::boxed::Box;
 // use other mods
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
 // use self mods
-use super::{Directory, FileFlags, FileSystem, InitMode, Inode};
+use super::{FileFlags, FileSystem, InitMode, Inode};
 use crate::block::{BlockDevice, BLOCK_CACHE_MANAGER};
 use crate::configs::{BLOCK_BIT_SIZE, BLOCK_BYTE_SIZE};
 use crate::layout::{Bitmap, DataBlock, DiskInode, SuperBlock};
@@ -362,6 +362,11 @@ impl FrontierFileSystem {
     }
 
     #[inline(always)]
+    pub fn device(&self) -> &Arc<dyn BlockDevice> {
+        &self.device
+    }
+
+    #[inline(always)]
     pub fn inode_area_start_block_id(&self) -> u32 {
         self.inode_area_start_block_id
     }
@@ -382,8 +387,7 @@ impl FileSystem for FS {
             0,
             disk_inode_block_id,
             disk_inode_block_offset,
-            self,
-            &fs.device,
+            FileFlags::all(),
         )
     }
 
@@ -456,10 +460,9 @@ impl FileSystem for FS {
             })?;
         let fs = Arc::new(Mutex::new(ffs));
         let root_inode = fs.root_inode();
-        let root_dir = Directory::new(root_inode);
-        let flags = FileFlags::IS_DIR;
+        let flags = FileFlags::all();
         let mut mfs = fs.lock();
-        root_dir.initialize(0, flags, flags, &mut mfs)?;
+        root_inode.init_as_dir(0, flags, &mut mfs)?;
         drop(mfs);
         Ok(Box::new(fs))
     }
@@ -641,28 +644,48 @@ mod tests {
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32), 1, &device).is_ok());
+        assert!(FS::initialize(
+            InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32),
+            1,
+            &device
+        )
+        .is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 3), 1, &device).is_ok());
+        assert!(FS::initialize(
+            InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 3),
+            1,
+            &device
+        )
+        .is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 4), 1, &device).is_ok());
+        assert!(FS::initialize(
+            InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 4),
+            1,
+            &device
+        )
+        .is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());
             assert_eq!(4, ffs.data_area_start_block_id());
             true
         }));
-        assert!(FS::initialize(InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 6), 1, &device).is_ok());
+        assert!(FS::initialize(
+            InitMode::TotalBlocks(PER_BLOCK_DISK_INODE_COUNT as u32 + 6),
+            1,
+            &device
+        )
+        .is_ok());
         assert!(FS::open(&device).is_ok_and(|ffs| {
             let ffs = ffs.lock();
             assert_eq!(2, ffs.inode_area_start_block_id());

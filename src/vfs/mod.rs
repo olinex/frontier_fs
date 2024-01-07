@@ -2,7 +2,6 @@
 // @time:      2023/11/25
 
 // self mods
-mod dentry;
 mod ffs;
 mod inode;
 
@@ -12,7 +11,6 @@ mod inode;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-pub use dentry::*;
 pub use ffs::*;
 pub use inode::*;
 
