@@ -9,7 +9,7 @@ use alloc::sync::Arc;
 use spin::mutex::Mutex;
 
 // use self mods
-use super::BlockDevice;
+use super::device::BlockDeviceTracker;
 use crate::configs::{BLOCK_BYTE_SIZE, BLOCK_CACHE_COUNT};
 use crate::{FFSError, Result};
 
@@ -19,7 +19,7 @@ use crate::{FFSError, Result};
 pub struct BlockCache {
     id: usize,
     cache: [u8; BLOCK_BYTE_SIZE],
-    device: Arc<dyn BlockDevice>,
+    tracker: Arc<BlockDeviceTracker>,
     modified: bool,
 }
 impl BlockCache {
@@ -27,20 +27,20 @@ impl BlockCache {
     ///
     /// # Arguments
     /// * id: the block id of the device
-    /// * device: the dynamic device to be used
+    /// * tracker: the tracker for the block device which was mounted
     ///
     /// # Returns
     /// * Ok(BlockCache)
-    /// * Err(FFSError(groups(block)))
-    fn new(id: usize, device: &Arc<dyn BlockDevice>) -> Result<Self> {
+    /// * Err(RawDeviceError(error code))
+    fn new(id: usize, tracker: Arc<BlockDeviceTracker>) -> Result<Self> {
         let mut cache = [0u8; BLOCK_BYTE_SIZE];
-        if let Some(err_code) = device.read_block(id, &mut cache) {
+        if let Some(err_code) = tracker.read_block(id, &mut cache) {
             Err(FFSError::RawDeviceError(err_code))
         } else {
             Ok(Self {
                 id,
                 cache,
-                device: Arc::clone(device),
+                tracker,
                 modified: false,
             })
         }
@@ -83,7 +83,6 @@ impl BlockCache {
     where
         T: Sized,
     {
-        self.modified = true;
         let addr = self.addr_of_offset(offset);
         unsafe { &mut *(addr as *mut T) }
     }
@@ -97,7 +96,7 @@ impl BlockCache {
     ///
     /// # Returns
     /// * Ok(the result of the closure)
-    /// * Err(FFSError::DataOutOfBounds)
+    /// * Err(DataOutOfBounds)
     pub fn read<T, V>(&self, offset: usize, f: impl FnOnce(&T) -> V) -> Result<V> {
         if (offset + core::mem::size_of::<T>()) <= BLOCK_BYTE_SIZE {
             Ok(f(self.get_ref(offset)))
@@ -114,9 +113,10 @@ impl BlockCache {
     ///
     /// # Returns
     /// * Ok(the result of the closure)
-    /// * Err(FFSError::DataOutOfBounds)
+    /// * Err(DataOutOfBounds)
     pub fn modify<T, V>(&mut self, offset: usize, f: impl FnOnce(&mut T) -> V) -> Result<V> {
         if (offset + core::mem::size_of::<T>()) <= BLOCK_BYTE_SIZE {
+            self.modified = true;
             Ok(f(self.get_mut(offset)))
         } else {
             Err(FFSError::DataOutOfBounds)
@@ -124,12 +124,16 @@ impl BlockCache {
     }
 
     /// Write data into block device
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(RawDeviceError(error code))
     pub fn sync(&mut self) -> Result<()> {
         if self.modified {
-            self.modified = false;
-            if let Some(err_code) = self.device.write_block(self.id, &self.cache) {
+            if let Some(err_code) = self.tracker.write_block(self.id, &self.cache) {
                 return Err(FFSError::RawDeviceError(err_code));
             }
+            self.modified = false;
         };
         Ok(())
     }
@@ -143,7 +147,7 @@ impl Drop for BlockCache {
 /// The manager of the block cache
 pub struct BlockCacheManager {
     /// the block caches mapping which key are the block ids
-    map: BTreeMap<usize, Arc<Mutex<BlockCache>>>,
+    map: BTreeMap<(usize, usize), Arc<Mutex<BlockCache>>>,
 }
 impl BlockCacheManager {
     /// Find the droptable block id in the cache list
@@ -151,28 +155,32 @@ impl BlockCacheManager {
     /// # Returns
     /// * Some(block id)
     /// * None: all of the blocks in the cache are using
-    fn find_droptable_id(&self) -> Option<usize> {
-        if let Some(pair) = self.map.iter().find(|pair| Arc::strong_count(pair.1) == 1) {
-            Some(*pair.0)
+    fn find_droptable_id(&self) -> Option<(usize, usize)> {
+        if let Some((key, _)) = self
+            .map
+            .iter()
+            .find(|pair| Arc::strong_count(pair.1) == 1 && !pair.1.is_locked())
+        {
+            Some((key.0, key.1))
         } else {
             None
         }
     }
 
-    /// Load block cache which is save in the manager's mapping.
+    /// Load block cache which was saved in the manager's mapping.
     /// If cache does not exists, it will be loaded from the block device immediately
     ///
     /// # Arguments
-    /// * id: the block id of the device
-    /// * device: the dynamic device to be used
+    /// * device_id: the unique id of the device
+    /// * tracker: the tracker for the block device which was mounted
     ///
     /// # Returns
     /// * Ok(Arc<Mutex<BlockDevice>>)
-    /// * Err(FFSError::NoDroptableBlockCache)
+    /// * Err(NoDroptableBlockCache | RawDeviceError(error code))
     fn load_cache(
         &mut self,
-        id: usize,
-        device: &Arc<dyn BlockDevice>,
+        tracker: &Arc<BlockDeviceTracker>,
+        block_id: usize,
     ) -> Result<Arc<Mutex<BlockCache>>> {
         if self.full() {
             if let Some(remove_id) = self.find_droptable_id() {
@@ -181,18 +189,20 @@ impl BlockCacheManager {
                 return Err(FFSError::NoDroptableBlockCache);
             }
         }
-        let cache = Arc::new(Mutex::new(BlockCache::new(id, device)?));
+        let id = (tracker.device_id(), block_id);
+        let cache = Arc::new(Mutex::new(BlockCache::new(block_id, Arc::clone(tracker))?));
         if self.map.insert(id, cache).is_some() {
-            panic!("Cache {0} already exists", id);
+            panic!("Cache {0} in device {1} already exists", id.1, id.0);
         }
         Ok(Arc::clone(self.map.get(&id).unwrap()))
     }
 
-    #[inline(always)]
+    /// Check if the cache is full
     fn full(&self) -> bool {
-        self.map.len() == BLOCK_CACHE_COUNT
+        self.map.len() >= BLOCK_CACHE_COUNT
     }
 
+    /// Create a new cache Manager
     fn new() -> Self {
         Self {
             map: BTreeMap::new(),
@@ -203,66 +213,75 @@ impl BlockCacheManager {
     /// If cache does not exists, it will be loaded from the block device immediately
     ///
     /// # Arguments
-    /// * id: the block id of the device
-    /// * device: the dynamic device to be used
+    /// * block_id: the block id of the device
+    /// * tracker: the tracker for the block device which was mounted
     ///
     /// # Returns
     /// * Ok(Arc<Mutex<BlockDevice>>)
-    /// * Err(FFSError::NoDroptableBlockCache)
-    fn get_cache(
+    /// * Err(NoDroptableBlockCache | RawDeviceError(error code))
+    pub fn get(
         &mut self,
-        id: usize,
-        device: &Arc<dyn BlockDevice>,
+        tracker: &Arc<BlockDeviceTracker>,
+        block_id: usize,
     ) -> Result<Arc<Mutex<BlockCache>>> {
+        let id = (tracker.device_id(), block_id);
         if let Some(cache) = self.map.get(&id) {
             Ok(Arc::clone(cache))
         } else {
-            self.load_cache(id, device)
+            self.load_cache(tracker, block_id)
         }
     }
 
-    fn clear(&mut self) {
-        self.map.clear()
+    /// Clear all caches in the cache manager.
+    /// Modified cache will be saved when dropping.
+    pub fn clear(&mut self) {
+        while self.map.len() != 0 {
+            if let Some(id) = self.find_droptable_id() {
+                let cache = Arc::clone(self.map.get(&id).unwrap());
+                let lock = cache.try_lock();
+                if lock.is_none() {
+                    continue;
+                }
+                self.map.remove(&id).unwrap();
+            }
+        }
     }
 }
 
 lazy_static! {
-    /// The global block cache manager
-    pub static ref BLOCK_CACHE_MANAGER: Mutex<BlockCacheManager> =
-        Mutex::new(BlockCacheManager::new());
-}
-impl BLOCK_CACHE_MANAGER {
-    pub fn get_cache(
-        &self,
-        id: usize,
-        device: &Arc<dyn BlockDevice>,
-    ) -> Result<Arc<Mutex<BlockCache>>> {
-        self.lock().get_cache(id, device)
-    }
-
-    pub fn clear(&self) {
-        self.lock().clear()
-    }
+    pub static ref BLOCK_CACHE_MANAGER: Arc<Mutex<BlockCacheManager>> =
+        Arc::new(Mutex::new(BlockCacheManager::new()));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::device::MockBlockDevice;
+
+    use super::super::device::{BlockDevice, MemoryBlockDevice, BLOCK_DEVICE_REGISTER};
     use super::*;
 
     #[test]
     fn test_block_cache_new() {
-        let mock: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        assert!(BlockCache::new(0, &mock).is_ok());
-        assert!(BlockCache::new(MockBlockDevice::total_block_count() - 1, &mock).is_ok());
-        assert!(BlockCache::new(MockBlockDevice::total_block_count(), &mock)
-            .is_err_and(|e| e.is_rawdeviceerror()));
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        assert!(BlockCache::new(0, Arc::clone(&tracker)).is_ok());
+        assert!(BlockCache::new(
+            MemoryBlockDevice::total_block_count() - 1,
+            Arc::clone(&tracker)
+        )
+        .is_ok());
+        assert!(
+            BlockCache::new(MemoryBlockDevice::total_block_count(), Arc::clone(&tracker))
+                .is_err_and(|e| e.is_rawdeviceerror())
+        );
     }
 
     #[test]
     fn test_block_read_and_modify() {
-        let mock: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let mut cache = BlockCache::new(0, &mock).unwrap();
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let mut cache = BlockCache::new(0, Arc::clone(&tracker)).unwrap();
         assert!(cache.read(0, |v: &u8| *v == 0).is_ok_and(|v| v));
         assert!(!cache.modified);
         assert!(cache.modify(0, |v: &mut u8| *v = 1).is_ok());
@@ -271,15 +290,17 @@ mod tests {
         assert!(cache.read(0, |v: &u8| *v == 1).is_ok_and(|v| v));
 
         drop(cache);
-        let cache = BlockCache::new(0, &mock).unwrap();
+        let cache = BlockCache::new(0, Arc::clone(&tracker)).unwrap();
         assert!(cache.read(0, |v: &u8| *v == 1).is_ok_and(|v| v));
     }
 
     #[test]
     fn test_block_cache_manager_find_droptable_id() {
-        let mock: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let cache1 = BLOCK_CACHE_MANAGER.get_cache(0, &mock);
-        let cache2 = BLOCK_CACHE_MANAGER.get_cache(0, &mock);
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let cache1 = BLOCK_CACHE_MANAGER.lock().get(&tracker, 0);
+        let cache2 = BLOCK_CACHE_MANAGER.lock().get(&tracker, 0);
         assert!(BLOCK_CACHE_MANAGER.lock().find_droptable_id().is_none());
         drop(cache1);
         assert!(BLOCK_CACHE_MANAGER.lock().find_droptable_id().is_none());
@@ -287,6 +308,6 @@ mod tests {
         assert!(BLOCK_CACHE_MANAGER
             .lock()
             .find_droptable_id()
-            .is_some_and(|v| v == 0));
+            .is_some_and(|v| v.1 == 0));
     }
 }

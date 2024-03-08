@@ -81,42 +81,34 @@ impl SuperBlock {
     }
 
     /// Check the validation of the super block data
-    #[inline(always)]
     pub fn is_valid(&self) -> bool {
         self.magic == FS_MAGIC
     }
 
-    #[inline(always)]
     pub fn total_blocks(&self) -> u32 {
         self.total_blocks
     }
 
-    #[inline(always)]
     pub fn inode_bitmap_blocks(&self) -> u32 {
         self.inode_bitmap_blocks
     }
 
-    #[inline(always)]
     pub fn inode_area_blocks(&self) -> u32 {
         self.inode_area_blocks
     }
 
-    #[inline(always)]
     pub fn data_bitmap_blocks(&self) -> u32 {
         self.data_bitmap_blocks
     }
 
-    #[inline(always)]
     pub fn data_area_blocks(&self) -> u32 {
         self.data_area_blocks
     }
 
-    #[inline(always)]
     pub fn disk_inodes(&self) -> u32 {
         self.disk_inodes
     }
 
-    #[inline(always)]
     pub fn iabc(&self) -> u8 {
         self.iabc
     }

@@ -4,6 +4,7 @@
 // self mods
 
 // use other mods
+use alloc::string::String;
 use enum_group::EnumGroup;
 use thiserror_no_std::Error;
 
@@ -11,6 +12,22 @@ use thiserror_no_std::Error;
 
 #[derive(Error, EnumGroup, Debug)]
 pub enum FFSError {
+    #[groups(device)]
+    #[error("Device id exhausted")]
+    DeviceIdExhausted,
+
+    #[groups(device)]
+    #[error("NoMoreDeviceMountable")]
+    NoMoreDeviceMountable,
+
+    #[groups(device)]
+    #[error("Device id does not exist")]
+    DeviceIdDoesNotExist(usize),
+
+    #[groups(device)]
+    #[error("Busy device undropptable")]
+    BusyDeviceUndropptable,
+
     #[groups(device)]
     #[error("Raw device error code: {0}")]
     RawDeviceError(isize),
@@ -44,16 +61,16 @@ pub enum FFSError {
     BitmapIndexDeallocated(usize),
 
     #[groups(vfs)]
-    #[error("File name was already exists in directory {0}")]
-    DuplicatedFname(u32),
+    #[error("File name `{0}` was already exists in directory {1}")]
+    DuplicatedFname(String, u32),
 
     #[groups(vfs)]
-    #[error("File name does not exist in directory {0}")]
-    FnameDoesNotExist(u32),
+    #[error("File name `{0}` does not exist in directory {1}")]
+    FnameDoesNotExist(String, u32),
 
     #[groups(vfs)]
-    #[error("Can't delete non-empty directory {0}")]
-    DeleteNonEmptyDirectory(u32),
+    #[error("Can't delete non-empty directory `{0}` from directory {1}")]
+    DeleteNonEmptyDirectory(String, u32),
 
     #[groups(others, parse)]
     #[error("core error: {0}")]

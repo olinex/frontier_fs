@@ -8,7 +8,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 // use self mods
-use crate::block::{BlockDevice, BLOCK_CACHE_MANAGER};
+use crate::block::{BlockDeviceTracker, BLOCK_CACHE_MANAGER};
 use crate::configs::BLOCK_BYTE_SIZE;
 use crate::{FFSError, Result};
 
@@ -45,6 +45,14 @@ enum HopLevel {
     Indirect3(usize, usize, usize, usize),
 }
 impl HopLevel {
+    /// Calculate the hop level for a given leaf index
+    ///
+    /// # Arguments
+    /// * leaf_index: the index of the leaf block which stores the raw data
+    ///
+    /// # Returns
+    /// * Ok(HopLevel)
+    /// * Err(DataOutOfBounds)
     fn cal_from(leaf_index: u32) -> Result<Self> {
         let mut leaf_index = leaf_index as usize;
         if leaf_index < DIRECT_ROOT_BLOCK_COUNT {
@@ -117,7 +125,7 @@ pub struct DiskInode {
     /// The byte size of the file raw data.
     /// This size is always little smaller than the size which file was allocated,
     /// because the application for the occupation of file is always done in blocks.
-    byte_size: u64,
+    data_byte_size: u64,
     /// List of data block ids which are directly pointing to data blocks
     direct: [u32; DIRECT_ROOT_BLOCK_COUNT],
     /// List of data block ids which area indirectly pointing to data blocks by one hop
@@ -128,6 +136,9 @@ pub struct DiskInode {
     indirect3: [u32; I3_ROOT_BLOCK_COUNT],
 }
 impl DiskInode {
+    /// Calculate the allocated byte size according to the raw data block byte size.
+    /// # Arguments
+    /// * new_byte_size: The new byte size block inode will resize to
     fn cal_allocated_byte_size(new_byte_size: u64) -> u64 {
         let remainder = BLOCK_BYTE_SIZE as u64;
         ((new_byte_size + remainder - 1) / remainder) * remainder
@@ -140,7 +151,7 @@ impl DiskInode {
     ///
     /// # Returns
     /// * Ok(leaf block count)
-    /// * Err(FFSError::DataOutOfBounds)
+    /// * Err(DataOutOfBounds)
     fn cal_leaf_block_count(byte_size: u64) -> Result<u32> {
         if byte_size <= MAX_INODE_BYTE_SIZE {
             Ok(((byte_size + BLOCK_BYTE_SIZE as u64 - 1) / BLOCK_BYTE_SIZE as u64) as u32)
@@ -200,7 +211,7 @@ impl DiskInode {
     ///
     /// # Returns
     /// * Ok(total block count)
-    /// * Err(FFSError::DataOutOfBounds)
+    /// * Err(DataOutOfBounds)
     fn cal_total_block_count(byte_size: u64) -> Result<u32> {
         let mut leaf_block_count = Self::cal_leaf_block_count(byte_size)? as usize;
         let mut total = leaf_block_count;
@@ -225,9 +236,9 @@ impl DiskInode {
         }
     }
 
-    #[inline(always)]
-    pub fn byte_size(&self) -> u64 {
-        self.byte_size
+    /// Get the byte size of the raw data in th disk inode
+    pub fn data_byte_size(&self) -> u64 {
+        self.data_byte_size
     }
 
     /// Obtain the number of blocks to be added
@@ -237,57 +248,67 @@ impl DiskInode {
     ///
     /// # Returns
     /// * Ok(more blocks count)
-    /// * Err(FFSError::DataOutOfBounds)
+    /// * Err(DataOutOfBounds)
     pub fn blocks_needed(&self, new_byte_size: u64) -> Result<u32> {
-        if self.byte_size < new_byte_size {
+        if self.data_byte_size < new_byte_size {
             Ok(Self::cal_total_block_count(new_byte_size)? - self.total_block_count())
         } else {
             Ok(0)
         }
     }
 
-    #[inline(always)]
+    /// Get the number of the total leaf block in the disk inode.
+    /// The raw data was stored in the leaf blocks.
     pub fn leaf_block_count(&self) -> u32 {
-        Self::cal_leaf_block_count(self.byte_size).unwrap()
+        Self::cal_leaf_block_count(self.data_byte_size).unwrap()
     }
 
-    #[inline(always)]
+    /// Get the number of the total blocks in the disk inode, including leaf blocks and branch blocks.
     pub fn total_block_count(&self) -> u32 {
-        Self::cal_total_block_count(self.byte_size).unwrap()
+        Self::cal_total_block_count(self.data_byte_size).unwrap()
     }
 
     /// Create a new disk inode and write it into the block device
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * block_id: the unique id of the block in the block device
     /// * offset: the number of the offset in a single block
-    /// * device: the dynamic device to be used
     ///
     /// # Returns
     /// * Ok(())
-    /// * Err(FFSError::DataOutOfBounds | FFSError::NoDroptableBlockCache)
-    #[inline(always)]
-    pub fn new(block_id: u32, offset: usize, device: &Arc<dyn BlockDevice>) -> Result<()> {
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    pub fn new(tracker: &Arc<BlockDeviceTracker>, block_id: u32, offset: usize) -> Result<()> {
         BLOCK_CACHE_MANAGER
-            .get_cache(block_id as usize, device)?
+            .lock()
+            .get(tracker, block_id as usize)?
             .lock()
             .modify(offset, |inode: &mut Self| {
                 inode.initialize();
             })
     }
 
-    #[inline(always)]
-    pub fn get(block_id: u32, offset: usize, device: &Arc<dyn BlockDevice>) -> Result<Self> {
+    /// Get the disk inode from block device
+    ///
+    /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
+    /// * block_id: the unique id of the block in the block device
+    /// * offset: the number of the offset in a single block
+    ///
+    /// # Returns
+    /// * Ok(Self)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    pub fn get(tracker: &Arc<BlockDeviceTracker>, block_id: u32, offset: usize) -> Result<Self> {
         BLOCK_CACHE_MANAGER
-            .get_cache(block_id as usize, device)?
+            .lock()
+            .get(tracker, block_id as usize)?
             .lock()
             .read(offset, |inode: &Self| inode.clone())
     }
 
     /// Initially make the disk inode empty, be careful all the blocks are not dealloced yet.
-    #[inline(always)]
     pub fn initialize(&mut self) {
-        self.byte_size = 0;
+        self.data_byte_size = 0;
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1.iter_mut().for_each(|v| *v = 0);
         self.indirect2.iter_mut().for_each(|v| *v = 0);
@@ -297,17 +318,21 @@ impl DiskInode {
     /// Get the block id from indirect branch block by single hop
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * block_id: the id of the indirect block
     /// * offset: the number of the offset which points to the next block
-    /// * device: the dynamic device to be used
-    #[inline(always)]
+    ///
+    /// # Returns
+    /// * Ok(indirect block id)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     fn get_indirect_block_id(
+        tracker: &Arc<BlockDeviceTracker>,
         block_id: usize,
         offset: usize,
-        device: &Arc<dyn BlockDevice>,
     ) -> Result<u32> {
         BLOCK_CACHE_MANAGER
-            .get_cache(block_id, device)?
+            .lock()
+            .get(tracker, block_id)?
             .lock()
             .read(0, |block: &IndirectBlock| block[offset])
     }
@@ -315,96 +340,118 @@ impl DiskInode {
     /// Get the block id from level 1 indirect branch block by single hop
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * index1: the index of the block id in level 1
     /// * offset: the number of the offset which points to the next block
-    /// * device: the dynamic device to be used
-    #[inline(always)]
+    ///
+    /// # Returns
+    /// * Ok(one hop indirect block id)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     fn get_indirect1_block_id(
         &self,
+        tracker: &Arc<BlockDeviceTracker>,
         index1: usize,
         offset: usize,
-        device: &Arc<dyn BlockDevice>,
     ) -> Result<u32> {
-        Self::get_indirect_block_id(self.indirect1[index1] as usize, offset, device)
+        Self::get_indirect_block_id(tracker, self.indirect1[index1] as usize, offset)
     }
 
     /// Get the block id from level 2 indirect branch block by two hops
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * index2: the index of the block id in level 2
     /// * index1: the index of the block id in level 1
     /// * offset: the number of the offset which points to the next block
-    /// * device: the dynamic device to be used
-    #[inline(always)]
+    ///
+    /// # Returns
+    /// * Ok(two hop indirect block id)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     fn get_indirect2_block_id(
         &self,
+        tracker: &Arc<BlockDeviceTracker>,
         index2: usize,
         index1: usize,
         offset: usize,
-        device: &Arc<dyn BlockDevice>,
     ) -> Result<u32> {
         let indirect_block_id =
-            Self::get_indirect_block_id(self.indirect2[index2] as usize, index1, device)?;
-        Self::get_indirect_block_id(indirect_block_id as usize, offset, device)
+            Self::get_indirect_block_id(tracker, self.indirect2[index2] as usize, index1)?;
+        Self::get_indirect_block_id(tracker, indirect_block_id as usize, offset)
     }
 
     /// Get the block id from level 2 indirect branch block by three hops
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * index3: the index of the block id in level 3
     /// * index2: the index of the block id in level 2
     /// * index1: the index of the block id in level 1
     /// * offset: the number of the offset which points to the next block
-    /// * device: the dynamic device to be used
-    #[inline(always)]
+    ///
+    /// # Returns
+    /// * Ok(three hop indirect block id)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     fn get_indirect3_block_id(
         &self,
+        tracker: &Arc<BlockDeviceTracker>,
         index3: usize,
         index2: usize,
         index1: usize,
         offset: usize,
-        device: &Arc<dyn BlockDevice>,
     ) -> Result<u32> {
         let indirect_block_id =
-            Self::get_indirect_block_id(self.indirect3[index3] as usize, index2, device)?;
+            Self::get_indirect_block_id(tracker, self.indirect3[index3] as usize, index2)?;
         let indirect_block_id =
-            Self::get_indirect_block_id(indirect_block_id as usize, index1, device)?;
-        Self::get_indirect_block_id(indirect_block_id as usize, offset, device)
+            Self::get_indirect_block_id(tracker, indirect_block_id as usize, index1)?;
+        Self::get_indirect_block_id(tracker, indirect_block_id as usize, offset)
     }
 
     /// Get the block id which stores the raw data
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * leaf_index: the index of the leaf block which stores the raw data
-    /// * device: the dynamic device to be used
     ///
     /// # Returns
     /// * Ok(block id)
-    /// * Err(FFSError::DataOutOfBounds)
-    pub fn get_block_id(&self, leaf_index: u32, device: &Arc<dyn BlockDevice>) -> Result<u32> {
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    pub fn get_block_id(&self, tracker: &Arc<BlockDeviceTracker>, leaf_index: u32) -> Result<u32> {
         if leaf_index >= self.leaf_block_count() {
             return Err(FFSError::DataOutOfBounds);
         }
         match HopLevel::cal_from(leaf_index)? {
             HopLevel::Direct(index0) => Ok(self.direct[index0]),
             HopLevel::Indirect1(index1, index0) => {
-                self.get_indirect1_block_id(index1, index0, device)
+                self.get_indirect1_block_id(tracker, index1, index0)
             }
             HopLevel::Indirect2(index2, index1, index0) => {
-                self.get_indirect2_block_id(index2, index1, index0, device)
+                self.get_indirect2_block_id(tracker, index2, index1, index0)
             }
             HopLevel::Indirect3(index3, index2, index1, index0) => {
-                self.get_indirect3_block_id(index3, index2, index1, index0, device)
+                self.get_indirect3_block_id(tracker, index3, index2, index1, index0)
             }
         }
     }
 
-    fn _collect_block_ids(
+    /// Get all the leaf and branch block ids in the range of the given leaf index.
+    /// The return vector contains the starting block id,
+    /// the ending block id will not be returned.
+    ///
+    /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
+    /// * start_leaf_index: the start index of the leaf to be collected
+    /// * end_leaf_index: the end index of the leaf to be collected
+    /// * block_count: the count of the resulting block ids
+    ///
+    /// # Returns
+    /// * Ok(Vec<block id>)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn collect_block_ids(
         &self,
+        tracker: &Arc<BlockDeviceTracker>,
         start_leaf_index: u32,
         end_leaf_index: u32,
         block_count: u32,
-        device: &Arc<dyn BlockDevice>,
     ) -> Result<Vec<u32>> {
         let mut block_ids = vec![0; block_count as usize];
         let mut result_index = 0;
@@ -421,7 +468,7 @@ impl DiskInode {
                         result_index += 1;
                     }
                     block_ids[result_index] =
-                        Self::get_indirect_block_id(pindex as usize, index0, device)?;
+                        Self::get_indirect_block_id(tracker, pindex as usize, index0)?;
                     result_index += 1;
                 }
                 HopLevel::Indirect2(index2, index1, index0) => {
@@ -430,13 +477,13 @@ impl DiskInode {
                         block_ids[result_index] = pindex;
                         result_index += 1;
                     }
-                    let pindex = Self::get_indirect_block_id(pindex as usize, index1, device)?;
+                    let pindex = Self::get_indirect_block_id(tracker, pindex as usize, index1)?;
                     if index0 == 0 {
                         block_ids[result_index] = pindex;
                         result_index += 1;
                     }
                     block_ids[result_index] =
-                        Self::get_indirect_block_id(pindex as usize, index0, device)?;
+                        Self::get_indirect_block_id(tracker, pindex as usize, index0)?;
                     result_index += 1;
                 }
                 HopLevel::Indirect3(index3, index2, index1, index0) => {
@@ -445,45 +492,61 @@ impl DiskInode {
                         block_ids[result_index] = pindex;
                         result_index += 1;
                     }
-                    let pindex = Self::get_indirect_block_id(pindex as usize, index2, device)?;
+                    let pindex = Self::get_indirect_block_id(tracker, pindex as usize, index2)?;
                     if index1 == 0 {
                         block_ids[result_index] = pindex;
                         result_index += 1;
                     }
-                    let pindex = Self::get_indirect_block_id(pindex as usize, index1, device)?;
+                    let pindex = Self::get_indirect_block_id(tracker, pindex as usize, index1)?;
                     if index0 == 0 {
                         block_ids[result_index] = pindex;
                         result_index += 1;
                     }
                     block_ids[result_index] =
-                        Self::get_indirect_block_id(pindex as usize, index0, device)?;
+                        Self::get_indirect_block_id(tracker, pindex as usize, index0)?;
                     result_index += 1;
                 }
             }
         }
+        assert_eq!(result_index, block_count as usize);
         Ok(block_ids)
     }
 
     /// clear the data in the leaf blocks and deallocate all of the leaf blocks and branch blocks
     ///
     /// # Arguments
-    /// * device: the dynamic device to be used
+    /// * tracker: the tracker for the block device which was mounted
     ///
     /// # Returns
     /// * Ok(Vec<block ids>)
-    pub fn clear_byte_size(&mut self, device: &Arc<dyn BlockDevice>) -> Result<Vec<u32>> {
-        let block_ids =
-            self._collect_block_ids(0, self.leaf_block_count(), self.total_block_count(), device)?;
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    pub fn clear_byte_size(&mut self, tracker: &Arc<BlockDeviceTracker>) -> Result<Vec<u32>> {
+        let block_ids = self.collect_block_ids(
+            tracker,
+            0,
+            self.leaf_block_count(),
+            self.total_block_count(),
+        )?;
         self.initialize();
         Ok(block_ids)
     }
 
+    /// Decrease raw data byte size to new one, freeing the unused leaf blocks.
+    /// The unused branch blocks may be removed at the same time.
+    ///
+    /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
+    /// * new_byte_size: the new byte size of the raw data
+    ///
+    /// # Returns
+    /// * Ok(Vec<unused leaf blocks and branch blocks>)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     pub fn decrease_to_byte_size(
         &mut self,
+        tracker: &Arc<BlockDeviceTracker>,
         new_byte_size: u64,
-        device: &Arc<dyn BlockDevice>,
     ) -> Result<Vec<u32>> {
-        assert!(self.byte_size > new_byte_size);
+        assert!(self.data_byte_size > new_byte_size);
         let origin_leaf_block_count = self.leaf_block_count();
         let origin_total_block_count = self.total_block_count();
         // try to collect dropable blocks
@@ -491,17 +554,17 @@ impl DiskInode {
         let new_leaf_block_count = Self::cal_leaf_block_count(allocated_byte_size)?;
         let new_total_block_count = Self::cal_total_block_count(allocated_byte_size)?;
         let remove_block_count = origin_total_block_count - new_total_block_count;
-        let block_ids = self._collect_block_ids(
+        let block_ids = self.collect_block_ids(
+            tracker,
             new_leaf_block_count,
             origin_leaf_block_count,
             remove_block_count,
-            device,
         )?;
         // clear the last block's unusing bytes
-        let origin_byte_size = self.byte_size;
+        let origin_byte_size = self.data_byte_size;
         let buffer = vec![0u8; (origin_byte_size - new_byte_size) as usize];
-        self.write_at(new_byte_size, &buffer, device)?;
-        self.byte_size = new_byte_size;
+        self.write_at(tracker, new_byte_size, &buffer)?;
+        self.data_byte_size = new_byte_size;
         Ok(block_ids)
     }
 
@@ -512,20 +575,25 @@ impl DiskInode {
     /// but the cache which contains the current disk inode was not updated yet!
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * new_byte_size: the new byte size of the raw data
     /// * new_block_ids: contains not only leaf block but also branch block
-    /// * device: the dynamic device to be used
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     pub fn increase_to_byte_size(
         &mut self,
+        tracker: &Arc<BlockDeviceTracker>,
         new_byte_size: u64,
         new_block_ids: Vec<u32>,
-        device: &Arc<dyn BlockDevice>,
     ) -> Result<()> {
-        assert!(self.byte_size < new_byte_size);
+        assert!(self.data_byte_size < new_byte_size);
         let mut leaf_index = self.leaf_block_count();
         let mut offset = 0;
+        let mut manager = BLOCK_CACHE_MANAGER.lock();
         let end = new_block_ids.len();
-        self.byte_size = new_byte_size;
+        self.data_byte_size = new_byte_size;
         while offset < end {
             match HopLevel::cal_from(leaf_index)? {
                 HopLevel::Direct(inner_offset) => {
@@ -542,8 +610,8 @@ impl DiskInode {
                     } else {
                         self.indirect1[index1]
                     };
-                    BLOCK_CACHE_MANAGER
-                        .get_cache(indirect_block_id as usize, device)?
+                    manager
+                        .get(tracker, indirect_block_id as usize)?
                         .lock()
                         .modify(0, |block: &mut IndirectBlock| {
                             block[inner_offset] = new_block_ids[offset]
@@ -562,17 +630,17 @@ impl DiskInode {
                     };
                     let indirect_block_id = if inner_offset == 0 {
                         let block_id = new_block_ids[offset];
-                        BLOCK_CACHE_MANAGER
-                            .get_cache(indirect_block_id as usize, device)?
+                        manager
+                            .get(tracker, indirect_block_id as usize)?
                             .lock()
                             .modify(0, |block: &mut IndirectBlock| block[index1] = block_id)?;
                         offset += 1;
                         block_id
                     } else {
-                        Self::get_indirect_block_id(indirect_block_id as usize, index1, device)?
+                        Self::get_indirect_block_id(tracker, indirect_block_id as usize, index1)?
                     };
-                    BLOCK_CACHE_MANAGER
-                        .get_cache(indirect_block_id as usize, device)?
+                    manager
+                        .get(tracker, indirect_block_id as usize)?
                         .lock()
                         .modify(0, |block: &mut IndirectBlock| {
                             block[inner_offset] = new_block_ids[offset]
@@ -591,28 +659,28 @@ impl DiskInode {
                     };
                     let indirect_block_id = if index1 == 0 {
                         let block_id = new_block_ids[offset];
-                        BLOCK_CACHE_MANAGER
-                            .get_cache(indirect_block_id as usize, device)?
+                        manager
+                            .get(tracker, indirect_block_id as usize)?
                             .lock()
                             .modify(0, |block: &mut IndirectBlock| block[index2] = block_id)?;
                         offset += 1;
                         block_id
                     } else {
-                        Self::get_indirect_block_id(indirect_block_id as usize, index2, device)?
+                        Self::get_indirect_block_id(tracker, indirect_block_id as usize, index2)?
                     };
                     let indirect_block_id = if inner_offset == 0 {
                         let block_id = new_block_ids[offset];
-                        BLOCK_CACHE_MANAGER
-                            .get_cache(indirect_block_id as usize, device)?
+                        manager
+                            .get(tracker, indirect_block_id as usize)?
                             .lock()
                             .modify(0, |block: &mut IndirectBlock| block[index1] = block_id)?;
                         offset += 1;
                         block_id
                     } else {
-                        Self::get_indirect_block_id(indirect_block_id as usize, index1, device)?
+                        Self::get_indirect_block_id(tracker, indirect_block_id as usize, index1)?
                     };
-                    BLOCK_CACHE_MANAGER
-                        .get_cache(indirect_block_id as usize, device)?
+                    manager
+                        .get(tracker, indirect_block_id as usize)?
                         .lock()
                         .modify(0, |block: &mut IndirectBlock| {
                             block[inner_offset] = new_block_ids[offset]
@@ -628,19 +696,20 @@ impl DiskInode {
     /// Read data as bytes from a specified offset
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * start_offset: the number of the offset which will be read as the start position
     /// * buffer: mutable reference to the buffer which will be written to bytes
-    /// * device: the dynamic device to be used
     ///
     /// * Returns:
     /// * Ok(the byte size of the data which have been readed from block device and written to the buffer)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     pub fn read_at(
         &self,
+        tracker: &Arc<BlockDeviceTracker>,
         start_offset: u64,
         buffer: &mut [u8],
-        device: &Arc<dyn BlockDevice>,
-    ) -> Result<u64> {
-        let end_offset = (start_offset + buffer.len() as u64).min(self.byte_size);
+    ) -> Result<usize> {
+        let end_offset = (start_offset + buffer.len() as u64).min(self.data_byte_size);
         if start_offset >= end_offset {
             return Ok(0);
         }
@@ -654,7 +723,12 @@ impl DiskInode {
                 0
             };
             let src_end = if index == (end_leaf_index - 1) {
-                (end_offset % BLOCK_BYTE_SIZE as u64) as usize
+                let src_end = (end_offset % BLOCK_BYTE_SIZE as u64) as usize;
+                if src_end == 0 && end_offset != 0 {
+                    BLOCK_BYTE_SIZE
+                } else {
+                    src_end
+                }
             } else {
                 BLOCK_BYTE_SIZE
             };
@@ -662,34 +736,36 @@ impl DiskInode {
             let dst_begin = read_byte_size;
             let dst_end = dst_begin + src_byte_size;
             let dst = &mut buffer[dst_begin..dst_end];
-            let block_id = self.get_block_id(index, device)?;
-            BLOCK_CACHE_MANAGER
-                .get_cache(block_id as usize, device)?
-                .lock()
+            let block_id = self.get_block_id(tracker, index)?;
+            let mut manager = BLOCK_CACHE_MANAGER.lock();
+            let cache = manager.get(tracker, block_id as usize)?;
+            let cache_lock = cache.lock();
+            cache_lock
                 .read(0, |block: &DataBlock| {
                     dst.copy_from_slice(&block[src_begin..src_end])
                 })?;
             read_byte_size = dst_end;
         }
-        Ok(read_byte_size as u64)
+        Ok(read_byte_size)
     }
 
     /// Write data as bytes to block device cache
     ///
     /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
     /// * start_offset: the number of the offset which will be read as the start position
     /// * buffer: reference to the buffer which will be readed
-    /// * device: the dynamic device to be used
     ///
     /// * Returns:
     /// * Ok(the byte size of the data which have been writed to block device cache)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     pub fn write_at(
         &mut self,
+        tracker: &Arc<BlockDeviceTracker>,
         start_offset: u64,
         buffer: &[u8],
-        device: &Arc<dyn BlockDevice>,
-    ) -> Result<u64> {
-        let end_offset = (start_offset + buffer.len() as u64).min(self.byte_size);
+    ) -> Result<usize> {
+        let end_offset = (start_offset + buffer.len() as u64).min(self.data_byte_size);
         if start_offset >= end_offset {
             return Ok(0);
         }
@@ -704,7 +780,7 @@ impl DiskInode {
             };
             let dst_end = if index == (end_leaf_index - 1) {
                 let dst_end = (end_offset % BLOCK_BYTE_SIZE as u64) as usize;
-                if dst_end == 0 {
+                if dst_end == 0 && end_offset != 0 {
                     BLOCK_BYTE_SIZE
                 } else {
                     dst_end
@@ -717,23 +793,25 @@ impl DiskInode {
             let src_begin = write_byte_size;
             let src_end = src_begin + dst_byte_size;
             let src = &buffer[src_begin..src_end];
-            let block_id = self.get_block_id(index, device)?;
+            let block_id = self.get_block_id(tracker, index)?;
             BLOCK_CACHE_MANAGER
-                .get_cache(block_id as usize, device)?
+                .lock()
+                .get(tracker, block_id as usize)?
                 .lock()
                 .modify(0, |block: &mut DataBlock| {
                     block[dst_begin..dst_end].copy_from_slice(src)
                 })?;
             write_byte_size = src_end;
         }
-        Ok(write_byte_size as u64)
+        Ok(write_byte_size)
     }
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use crate::block::MockBlockDevice;
+    use crate::block::{BlockDevice, MemoryBlockDevice, BLOCK_DEVICE_REGISTER};
 
     #[test]
     fn test_hop_level_cal_from() {
@@ -1211,8 +1289,10 @@ mod tests {
 
     #[test]
     fn test_disk_inode_blocks_needed() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let mut inode = DiskInode::get(0, 0, &device).unwrap();
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let mut inode = DiskInode::get(&tracker, 0, 0).unwrap();
         assert_eq!(0, inode.blocks_needed(0).unwrap());
         assert_eq!(1, inode.blocks_needed(1).unwrap());
         assert_eq!(1, inode.blocks_needed(BLOCK_BYTE_SIZE as u64).unwrap());
@@ -1229,7 +1309,7 @@ mod tests {
                 .blocks_needed((BLOCK_BYTE_SIZE * DIRECT_ROOT_BLOCK_COUNT) as u64 + 1)
                 .unwrap()
         );
-        inode.byte_size = 1;
+        inode.data_byte_size = 1;
         assert_eq!(0, inode.blocks_needed(0).unwrap());
         assert_eq!(0, inode.blocks_needed(1).unwrap());
         assert_eq!(0, inode.blocks_needed(BLOCK_BYTE_SIZE as u64).unwrap());
@@ -1250,96 +1330,106 @@ mod tests {
 
     #[test]
     fn test_disk_inode_leaf_block_count() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let mut inode = DiskInode::get(0, 0, &device).unwrap();
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let mut inode = DiskInode::get(&tracker, 0, 0).unwrap();
         assert_eq!(0, inode.leaf_block_count());
-        inode.byte_size = 1;
+        inode.data_byte_size = 1;
         assert_eq!(1, inode.leaf_block_count());
-        inode.byte_size = BLOCK_BYTE_SIZE as u64;
+        inode.data_byte_size = BLOCK_BYTE_SIZE as u64;
         assert_eq!(1, inode.leaf_block_count());
-        inode.byte_size = BLOCK_BYTE_SIZE as u64 + 1;
+        inode.data_byte_size = BLOCK_BYTE_SIZE as u64 + 1;
         assert_eq!(2, inode.leaf_block_count());
-        inode.byte_size = (BLOCK_BYTE_SIZE * DIRECT_ROOT_BLOCK_COUNT) as u64;
+        inode.data_byte_size = (BLOCK_BYTE_SIZE * DIRECT_ROOT_BLOCK_COUNT) as u64;
         assert_eq!(DIRECT_ROOT_BLOCK_COUNT as u32, inode.leaf_block_count());
-        inode.byte_size = (BLOCK_BYTE_SIZE * DIRECT_ROOT_BLOCK_COUNT) as u64 + 1;
+        inode.data_byte_size = (BLOCK_BYTE_SIZE * DIRECT_ROOT_BLOCK_COUNT) as u64 + 1;
         assert_eq!(DIRECT_ROOT_BLOCK_COUNT as u32 + 1, inode.leaf_block_count());
     }
 
     #[test]
     fn test_disk_inode_new() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        assert!(DiskInode::new(0, 0, &device).is_ok());
-        let mut inode1 = DiskInode::get(0, 0, &device).unwrap();
-        assert_eq!(0, inode1.byte_size());
-        assert!(inode1.increase_to_byte_size(1, vec![1], &device).is_ok());
-        assert_eq!(1, inode1.byte_size());
-        assert!(DiskInode::new(0, 0, &device).is_ok());
-        let inode1 = DiskInode::get(0, 0, &device).unwrap();
-        assert_eq!(0, inode1.byte_size());
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        assert!(DiskInode::new(&tracker, 0, 0).is_ok());
+        let mut inode1 = DiskInode::get(&tracker, 0, 0).unwrap();
+        assert_eq!(0, inode1.data_byte_size());
+        assert!(inode1.increase_to_byte_size(&tracker, 1, vec![1]).is_ok());
+        assert_eq!(1, inode1.data_byte_size());
+        assert!(DiskInode::new(&tracker, 0, 0).is_ok());
+        let inode1 = DiskInode::get(&tracker, 0, 0).unwrap();
+        assert_eq!(0, inode1.data_byte_size());
     }
 
     #[test]
     fn test_disk_inode_get_byte_size() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let mut inode1 = DiskInode::get(0, 0, &device).unwrap();
-        assert_eq!(0, inode1.byte_size());
-        inode1.byte_size = 2;
-        assert_eq!(2, inode1.byte_size());
-        let mut inode2 = DiskInode::get(0, 0, &device).unwrap();
-        assert_eq!(2, inode1.byte_size());
-        assert_eq!(0, inode2.byte_size());
-        inode1.byte_size = 0;
-        inode2.byte_size = 2;
-        assert_eq!(0, inode1.byte_size());
-        assert_eq!(2, inode2.byte_size());
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let mut inode1 = DiskInode::get(&tracker, 0, 0).unwrap();
+        assert_eq!(0, inode1.data_byte_size());
+        inode1.data_byte_size = 2;
+        assert_eq!(2, inode1.data_byte_size());
+        let mut inode2 = DiskInode::get(&tracker, 0, 0).unwrap();
+        assert_eq!(2, inode1.data_byte_size());
+        assert_eq!(0, inode2.data_byte_size());
+        inode1.data_byte_size = 0;
+        inode2.data_byte_size = 2;
+        assert_eq!(0, inode1.data_byte_size());
+        assert_eq!(2, inode2.data_byte_size());
     }
 
     #[test]
     fn test_disk_inode_get_block_id_and_clear_byte_size() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let mut inode = DiskInode::get(0, 0, &device).unwrap();
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let mut inode = DiskInode::get(&tracker, 0, 0).unwrap();
         let mut block_ids = vec![];
         for id in 0..=DIRECT_ROOT_BLOCK_COUNT + 1 {
             block_ids.push(id as u32);
         }
         assert!(inode
-            .get_block_id(0, &device)
+            .get_block_id(&tracker, 0)
             .is_err_and(|e| e.is_dataoutofbounds()));
         assert!(inode
-            .increase_to_byte_size(1, block_ids[0..1].to_vec(), &device)
+            .increase_to_byte_size(&tracker, 1, block_ids[0..1].to_vec())
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
-        assert!(inode.get_block_id(1, &device).is_err());
+        assert!(inode.get_block_id(&tracker, 0).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(&tracker, 1).is_err());
         assert!(inode
-            .clear_byte_size(&device)
+            .clear_byte_size(&tracker)
             .is_ok_and(|block_ids| { block_ids.len() == 1 && block_ids[0] == 0 }));
         assert!(inode
-            .increase_to_byte_size(BLOCK_BYTE_SIZE as u64, block_ids[0..1].to_vec(), &device)
+            .increase_to_byte_size(&tracker, BLOCK_BYTE_SIZE as u64, block_ids[0..1].to_vec())
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
-        assert!(inode.get_block_id(1, &device).is_err());
+        assert!(inode.get_block_id(&tracker, 0).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(&tracker, 1).is_err());
         assert!(inode
-            .clear_byte_size(&device)
+            .clear_byte_size(&tracker)
             .is_ok_and(|block_ids| { block_ids.len() == 1 && block_ids[0] == 0 }));
         assert!(inode
             .increase_to_byte_size(
+                &tracker,
                 BLOCK_BYTE_SIZE as u64 + 1,
                 block_ids[0..2].to_vec(),
-                &device
             )
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
-        assert!(inode.get_block_id(1, &device).is_ok_and(|id| id == 1));
-        assert!(inode.get_block_id(2, &device).is_err());
-        assert!(inode.clear_byte_size(&device).is_ok_and(|block_ids| {
+        assert!(inode.get_block_id(&tracker, 0).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(&tracker, 1).is_ok_and(|id| id == 1));
+        assert!(inode.get_block_id(&tracker, 2).is_err());
+        assert!(inode.clear_byte_size(&tracker).is_ok_and(|block_ids| {
             block_ids.len() == 2 && block_ids[0] == 0 && block_ids[1] == 1
         }));
     }
 
     #[test]
     fn test_disk_inode_decrease_to_byte_size() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let mut inode = DiskInode::get(0, 0, &device).unwrap();
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let mut inode = DiskInode::get(&tracker, 0, 0).unwrap();
         let mut read_buffer = [0u8; BLOCK_BYTE_SIZE + 1];
         let write_buffer = [1u8; BLOCK_BYTE_SIZE + 1];
         let mut block_ids = vec![];
@@ -1347,30 +1437,30 @@ mod tests {
             block_ids.push(id as u32);
         }
         assert!(inode
-            .get_block_id(0, &device)
+            .get_block_id(&tracker, 0)
             .is_err_and(|e| e.is_dataoutofbounds()));
 
         assert!(inode
             .increase_to_byte_size(
+                &tracker,
                 (BLOCK_BYTE_SIZE + 2) as u64,
                 block_ids[0..2].to_vec(),
-                &device
             )
             .is_ok());
         assert!(inode
-            .decrease_to_byte_size(BLOCK_BYTE_SIZE as u64 + 1, &device)
+            .decrease_to_byte_size(&tracker, BLOCK_BYTE_SIZE as u64 + 1)
             .is_ok_and(|block_ids| block_ids.len() == 0));
         assert!(inode
-            .decrease_to_byte_size(BLOCK_BYTE_SIZE as u64, &device)
+            .decrease_to_byte_size(&tracker, BLOCK_BYTE_SIZE as u64)
             .is_ok_and(|block_ids| block_ids.len() == 1 && block_ids[0] == 1));
         assert!(inode
-            .decrease_to_byte_size(3, &device)
+            .decrease_to_byte_size(&tracker, 3)
             .is_ok_and(|block_ids| block_ids.len() == 0));
         assert!(inode
-            .write_at(0, &write_buffer, &device)
+            .write_at(&tracker, 0, &write_buffer)
             .is_ok_and(|size| size == 3));
         assert!(inode
-            .read_at(0, &mut read_buffer, &device)
+            .read_at(&tracker, 0, &mut read_buffer)
             .is_ok_and(|size| size == 3));
         assert_eq!(1, read_buffer[0]);
         assert_eq!(1, read_buffer[1]);
@@ -1380,10 +1470,10 @@ mod tests {
         read_buffer[1] = 0;
         read_buffer[2] = 0;
         assert!(inode
-            .decrease_to_byte_size(1, &device)
+            .decrease_to_byte_size(&tracker, 1)
             .is_ok_and(|block_ids| block_ids.len() == 0));
         assert!(inode
-            .read_at(0, &mut read_buffer, &device)
+            .read_at(&tracker, 0, &mut read_buffer)
             .is_ok_and(|size| size == 1));
         assert_eq!(1, read_buffer[0]);
         assert_eq!(0, read_buffer[1]);
@@ -1393,10 +1483,10 @@ mod tests {
         read_buffer[1] = 0;
         read_buffer[2] = 0;
         assert!(inode
-            .decrease_to_byte_size(0, &device)
+            .decrease_to_byte_size(&tracker, 0)
             .is_ok_and(|block_ids| block_ids.len() == 1 && block_ids[0] == 0));
         assert!(inode
-            .read_at(0, &mut read_buffer, &device)
+            .read_at(&tracker, 0, &mut read_buffer)
             .is_ok_and(|size| size == 0));
         assert_eq!(0, read_buffer[0]);
         assert_eq!(0, read_buffer[1]);
@@ -1405,93 +1495,97 @@ mod tests {
 
     #[test]
     fn test_disk_inode_get_block_id_and_increase_to_byte_size() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let mut inode = DiskInode::get(0, 0, &device).unwrap();
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let mut inode = DiskInode::get(&tracker, 0, 0).unwrap();
         let mut block_ids = vec![];
         for id in 0..=DIRECT_ROOT_BLOCK_COUNT + 1 {
             block_ids.push(id as u32);
         }
         assert!(inode
-            .get_block_id(0, &device)
+            .get_block_id(&tracker, 0)
             .is_err_and(|e| e.is_dataoutofbounds()));
         assert!(inode
-            .increase_to_byte_size(1, block_ids[0..1].to_vec(), &device)
+            .increase_to_byte_size(&tracker, 1, block_ids[0..1].to_vec())
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
-        assert!(inode.get_block_id(1, &device).is_err());
+        assert!(inode.get_block_id(&tracker, 0).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(&tracker, 1).is_err());
         assert!(inode
-            .increase_to_byte_size(BLOCK_BYTE_SIZE as u64, vec![], &device)
+            .increase_to_byte_size(&tracker, BLOCK_BYTE_SIZE as u64, vec![])
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
-        assert!(inode.get_block_id(1, &device).is_err());
+        assert!(inode.get_block_id(&tracker, 0).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(&tracker, 1).is_err());
         assert!(inode
             .increase_to_byte_size(
+                &tracker,
                 BLOCK_BYTE_SIZE as u64 + 1,
                 block_ids[1..2].to_vec(),
-                &device
             )
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
-        assert!(inode.get_block_id(1, &device).is_ok_and(|id| id == 1));
-        assert!(inode.get_block_id(2, &device).is_err());
+        assert!(inode.get_block_id(&tracker, 0).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(&tracker, 1).is_ok_and(|id| id == 1));
+        assert!(inode.get_block_id(&tracker, 2).is_err());
         assert!(inode
             .increase_to_byte_size(
+                &tracker,
                 (BLOCK_BYTE_SIZE * DIRECT_ROOT_BLOCK_COUNT) as u64 + 1,
                 block_ids[2..=DIRECT_ROOT_BLOCK_COUNT + 1].to_vec(),
-                &device
             )
             .is_ok());
-        assert!(inode.get_block_id(0, &device).is_ok_and(|id| id == 0));
-        assert!(inode.get_block_id(1, &device).is_ok_and(|id| id == 1));
+        assert!(inode.get_block_id(&tracker, 0).is_ok_and(|id| id == 0));
+        assert!(inode.get_block_id(&tracker, 1).is_ok_and(|id| id == 1));
         assert!(inode
-            .get_block_id(DIRECT_ROOT_BLOCK_COUNT as u32 - 1, &device)
+            .get_block_id(&tracker, DIRECT_ROOT_BLOCK_COUNT as u32 - 1)
             .is_ok_and(|id| id == DIRECT_ROOT_BLOCK_COUNT as u32 - 1));
         assert!(inode
-            .get_block_id(DIRECT_ROOT_BLOCK_COUNT as u32, &device)
+            .get_block_id(&tracker, DIRECT_ROOT_BLOCK_COUNT as u32)
             .is_ok_and(|id| id == DIRECT_ROOT_BLOCK_COUNT as u32 + 1));
         assert!(inode
-            .get_block_id(DIRECT_ROOT_BLOCK_COUNT as u32 + 1, &device)
+            .get_block_id(&tracker, DIRECT_ROOT_BLOCK_COUNT as u32 + 1)
             .is_err());
     }
 
     #[test]
     fn test_disk_inode_read_at_and_write_at() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let mut inode = DiskInode::get(0, 0, &device).unwrap();
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let mut inode = DiskInode::get(&tracker, 0, 0).unwrap();
         let mut read_buffer = [0u8; BLOCK_BYTE_SIZE + 1];
         let write_buffer = [1u8; BLOCK_BYTE_SIZE + 1];
         assert!(inode
-            .read_at(0, &mut read_buffer, &device)
+            .read_at(&tracker, 0, &mut read_buffer)
             .is_ok_and(|size| size == 0));
 
-        assert!(inode.increase_to_byte_size(1, vec![0], &device).is_ok());
+        assert!(inode.increase_to_byte_size(&tracker, 1, vec![0]).is_ok());
         assert!(inode
-            .write_at(0, &write_buffer, &device)
+            .write_at(&tracker, 0, &write_buffer)
             .is_ok_and(|size| size == 1));
         assert!(inode
-            .read_at(0, &mut read_buffer, &device)
+            .read_at(&tracker, 0, &mut read_buffer)
             .is_ok_and(|size| size == 1));
         assert_eq!(1, read_buffer[0]);
 
-        assert!(inode.increase_to_byte_size(2, vec![], &device).is_ok());
+        assert!(inode.increase_to_byte_size(&tracker, 2, vec![]).is_ok());
         assert!(inode
-            .write_at(0, &write_buffer, &device)
+            .write_at(&tracker, 0, &write_buffer)
             .is_ok_and(|size| size == 2));
         assert!(inode
-            .read_at(0, &mut read_buffer, &device)
+            .read_at(&tracker, 0, &mut read_buffer)
             .is_ok_and(|size| size == 2));
         assert_eq!(1, read_buffer[0]);
         assert_eq!(1, read_buffer[1]);
 
         assert!(inode
-            .increase_to_byte_size((BLOCK_BYTE_SIZE + 1) as u64, vec![1], &device)
+            .increase_to_byte_size(&tracker, (BLOCK_BYTE_SIZE + 1) as u64, vec![1])
             .is_ok());
         assert!(inode
-            .write_at(0, &write_buffer, &device)
-            .is_ok_and(|size| size == (BLOCK_BYTE_SIZE + 1) as u64));
+            .write_at(&tracker, 0, &write_buffer)
+            .is_ok_and(|size| size == (BLOCK_BYTE_SIZE + 1)));
         assert!(inode
-            .read_at(0, &mut read_buffer, &device)
-            .is_ok_and(|size| size == (BLOCK_BYTE_SIZE + 1) as u64));
+            .read_at(&tracker, 0, &mut read_buffer)
+            .is_ok_and(|size| size == (BLOCK_BYTE_SIZE + 1)));
         assert_eq!(1, read_buffer[0]);
         assert_eq!(1, read_buffer[1]);
         assert_eq!(1, read_buffer[BLOCK_BYTE_SIZE]);

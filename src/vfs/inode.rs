@@ -9,12 +9,12 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bit_field::BitField;
-use sha2::{Digest, Sha256};
-use spin::MutexGuard;
+use hmac_sha256::Hash;
+use spin::{Mutex, MutexGuard};
 
 // use self mods
 use super::ffs::FrontierFileSystem;
-use crate::block::{BlockDevice, BLOCK_CACHE_MANAGER};
+use crate::block::{BlockDeviceTracker, BLOCK_CACHE_MANAGER};
 use crate::configs::BLOCK_BYTE_SIZE;
 use crate::layout::DiskInode;
 use crate::{AsBytes, AsBytesMut, FFSError, Result};
@@ -24,12 +24,14 @@ const NAME_BYTE_SIZE: usize = 242;
 const NAME_HASH_BYTE_SIZE: usize = 32;
 const HASH_GROUP_COUNT: usize = 4;
 const HASH_GROUP_ITEM_COUNT: usize = 4;
+const HASH_GROUP_END_INDEX: usize = HASH_GROUP_COUNT - 1;
+const HASH_GROUP_ITEM_END_INDEX: usize = HASH_GROUP_ITEM_COUNT - 1;
 const FHEADER_BYTE_SIZE: usize = core::mem::size_of::<Fheader>();
 const FENTRY_BYTE_SIZE: usize = core::mem::size_of::<Fentry>();
 const FNAME_BYTE_SIZE: usize = core::mem::size_of::<Fname>();
 
-const SELF_FNAME_STR: &str = ".";
-const PARENT_FNAME_STR: &str = "..";
+pub const SELF_FNAME_STR: &str = ".";
+pub const PARENT_FNAME_STR: &str = "..";
 
 bitflags! {
     /// Flags that indicate file's meta infos, including file types/permissions
@@ -37,15 +39,23 @@ bitflags! {
     pub struct FileFlags: u32 {
         const VALID = 1 << 31;
         const DIR = 1 << 30;
+        const HARD_LINK = 1 << 29;
     }
 }
 impl FileFlags {
-    fn is_valid(&self) -> bool {
+    /// Check if the file is valid
+    pub fn is_valid(&self) -> bool {
         self.contains(FileFlags::VALID)
     }
 
-    fn is_dir(&self) -> bool {
+    /// Check if the file is directory
+    pub fn is_dir(&self) -> bool {
         self.contains(FileFlags::DIR)
+    }
+
+    /// Check if the file is a hard link
+    pub fn is_hard_link(&self) -> bool {
+        self.contains(FileFlags::HARD_LINK)
     }
 }
 
@@ -55,10 +65,12 @@ struct Fheader {
     next_leaf_indexes: [u32; HASH_GROUP_COUNT],
 }
 impl Fheader {
+    /// Calculate the byte offset of the file header in directory's leaf blocks
     fn cal_start_offset(leaf_index: u32) -> u64 {
         leaf_index as u64 * BLOCK_BYTE_SIZE as u64
     }
 
+    /// Create a new empty file header
     fn empty() -> Self {
         Self {
             next_leaf_indexes: [0; HASH_GROUP_COUNT],
@@ -95,22 +107,22 @@ struct Fname {
     length: u8,
 }
 impl Fname {
+    /// Calculate the byte offset of the file name in directory's leaf blocks
     fn cal_start_offset(leaf_index: u32, hash_index: usize, item_index: usize) -> u64 {
         Fentry::cal_start_offset(leaf_index, hash_index, item_index) + FENTRY_BYTE_SIZE as u64
     }
 
+    /// Calculate the hash bytes array of the input bytes slice
     fn cal_hash(bytes: &[u8]) -> [u8; NAME_HASH_BYTE_SIZE] {
-        let mut name_hash = [0; NAME_HASH_BYTE_SIZE];
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        name_hash.copy_from_slice(&hasher.finalize());
-        name_hash
+        Hash::hash(bytes)
     }
 
+    /// Calculate the hash index of the input byte
     fn cal_hash_index(byte: u8) -> usize {
         byte.get_bits(0..2) as usize
     }
 
+    /// Calculate the hash byte array by the file name
     fn cal_name_hash(name: &str) -> [u8; NAME_HASH_BYTE_SIZE] {
         let bytes = name.as_bytes();
         let name_len = bytes.len();
@@ -118,6 +130,7 @@ impl Fname {
         Self::cal_hash(bytes)
     }
 
+    /// Create a new empty file name
     fn empty() -> Self {
         Self {
             bytes: [0; NAME_BYTE_SIZE],
@@ -125,6 +138,15 @@ impl Fname {
         }
     }
 
+    /// Clear current file name as empty
+    fn clear(&mut self) {
+        for each in self.bytes.iter_mut() {
+            *each = 0;
+        }
+        self.length = 0;
+    }
+
+    /// Create a new file name from a string
     fn new(name: &str) -> Self {
         let length = name.len();
         assert!(length <= NAME_BYTE_SIZE);
@@ -136,12 +158,19 @@ impl Fname {
         }
     }
 
+    /// Convert file name to a string
     fn to_str(&self) -> &str {
-        core::str::from_utf8(&self.bytes[0..self.length as usize]).unwrap()
+        core::str::from_utf8(self.to_bytes()).unwrap()
     }
 
+    /// Convert file name to a byte slice
+    fn to_bytes(&self) -> &[u8] {
+        &self.bytes[0..self.length as usize]
+    }
+
+    /// Check if the current file name is equal to other string
     fn is_equal(&self, other: &str) -> bool {
-        self.to_str().as_bytes().iter().eq(other.as_bytes().iter())
+        self.to_bytes().iter().eq(other.as_bytes().iter())
     }
 }
 impl AsBytes for Fname {
@@ -189,6 +218,13 @@ impl Fentry {
         }
     }
 
+    /// Make self empty
+    fn clear(&mut self) {
+        self.inode_bitmap_index = 0;
+        self.flags = FileFlags::empty();
+        self.next_hash_byte = 0;
+    }
+
     /// Create a new file entry
     ///
     /// # Arguments
@@ -206,15 +242,18 @@ impl Fentry {
     }
 
     /// Check if the file is directory
-    #[inline(always)]
     fn is_dir(&self) -> bool {
         self.flags.is_dir()
     }
 
     /// Check if the file entry is valid
-    #[inline(always)]
     fn is_valid(&self) -> bool {
         self.flags.is_valid()
+    }
+
+    // Check if the file entry is hard link
+    fn is_hard_link(&self) -> bool {
+        self.flags.is_hard_link()
     }
 }
 impl AsBytes for Fentry {
@@ -236,7 +275,7 @@ impl AsBytesMut for Fentry {
 
 /// Abstract class for file in block device,
 /// which contains the basic information and methods for controlling the real physical disk inode
-pub struct Inode {
+pub struct AbstractInode {
     /// the index of the disk inode in the bitmap
     inode_bitmap_index: u32,
     /// the block id in the block device, which contains the disk inode in the block
@@ -247,85 +286,99 @@ pub struct Inode {
     flags: FileFlags,
 }
 // as common
-impl Inode {
-    #[inline(always)]
-    pub fn flags(&self) -> FileFlags {
-        self.flags
-    }
-
-    /// Provides a method to reading disk inode and return the result of the closure
-    ///
-    /// # Arguments
-    /// * f: the closure function which receives the reference of the disk inode and return the result
-    ///
-    /// # Returns
-    /// * Ok(V): the result value wrapped in Result
-    /// * Err(FFSError::NoDroptableBlockCache)
-    /// * Err(FFSError::DataOutOfBounds)
-    pub fn read_disk_inode<V>(
-        &self,
-        device: &Arc<dyn BlockDevice>,
-        f: impl FnOnce(&DiskInode) -> V,
-    ) -> Result<V> {
-        BLOCK_CACHE_MANAGER
-            .get_cache(self.disk_inode_block_id as usize, device)?
-            .lock()
-            .read(self.disk_inode_block_offset, f)
-    }
-
-    /// Provides a method to writing disk inode and return the result of the closure
-    ///
-    /// # Arguments
-    /// * f: the closure function which receives the mutable reference of the disk inode and return the result
-    ///
-    /// # Returns
-    /// * Ok(V): the result value wrapped in Result
-    /// * Err(FFSError::NoDroptableBlockCache)
-    /// * Err(FFSError::DataOutOfBounds)
-    pub fn modify_disk_inode<V>(
-        &self,
-        device: &Arc<dyn BlockDevice>,
-        f: impl FnOnce(&mut DiskInode) -> V,
-    ) -> Result<V> {
-        BLOCK_CACHE_MANAGER
-            .get_cache(self.disk_inode_block_id as usize, device)?
-            .lock()
-            .modify(self.disk_inode_block_offset, f)
-    }
-
+impl AbstractInode {
     /// Change the disk inode byte size to the specified value.
     /// When the new byte size is greater than the original byte size, this method will allocate some needed new blocks.
     /// When the new byte size is smaller than the original byte size, this method will deallocate some blocks that are no longer in use.
     ///
     /// # Arguments
     /// * new_byte_size: the new byte size disk inode will changed to
-    /// * disk_inode:
+    /// * disk_inode: the disk inode which will be modified
+    /// ference of the file system which owns the current disk inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(
+    ///     DataOutOfBounds |
+    ///     BitmapExhausted(start_block_id) |
+    ///     BitmapIndexDeallocated(bitmap_index) |
+    ///     NoDroptableBlockCache |
+    ///     RawDeviceError(error code)
+    /// )
     fn to_byte_size(
-        &self,
         new_byte_size: u64,
         disk_inode: &mut DiskInode,
         fs: &mut MutexGuard<FrontierFileSystem>,
     ) -> Result<()> {
-        let origin_byte_size = disk_inode.byte_size();
-        let blocks_needed = disk_inode.blocks_needed(new_byte_size)?;
+        let origin_byte_size = disk_inode.data_byte_size();
         if new_byte_size > origin_byte_size {
+            let blocks_needed = disk_inode.blocks_needed(new_byte_size)?;
             let block_ids = fs.bulk_alloc_data_block_ids(blocks_needed)?;
-            disk_inode.increase_to_byte_size(new_byte_size, block_ids, fs.device())
+            disk_inode.increase_to_byte_size(fs.tracker(), new_byte_size, block_ids)
         } else if new_byte_size < origin_byte_size {
-            let block_ids = disk_inode.decrease_to_byte_size(new_byte_size, fs.device())?;
+            let block_ids = disk_inode.decrease_to_byte_size(fs.tracker(), new_byte_size)?;
             fs.bulk_dealloc_data_block_ids(block_ids)
         } else {
             Ok(())
         }
     }
 
+    /// Provides a method to reading disk inode and return the result of the closure
+    ///
+    /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
+    /// * f: the closure function which receives the reference of the disk inode and return the result
+    ///
+    /// # Returns
+    /// * Ok(V): the result value wrapped in Result
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn read_disk_inode<V>(
+        &self,
+        tracker: &Arc<BlockDeviceTracker>,
+        f: impl FnOnce(&DiskInode) -> V,
+    ) -> Result<V> {
+        let mut manager = BLOCK_CACHE_MANAGER.lock();
+        let cache = manager.get(tracker, self.disk_inode_block_id as usize)?;
+        let cache_lock = cache.lock();
+        drop(manager);
+        cache_lock.read(self.disk_inode_block_offset, f)
+    }
+
+    /// Provides a method to writing disk inode and return the result of the closure
+    ///
+    /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
+    /// * f: the closure function which receives the mutable reference of the disk inode and return the result
+    ///
+    /// # Returns
+    /// * Ok(V): the result value wrapped in Result
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn modify_disk_inode<V>(
+        &self,
+        tracker: &Arc<BlockDeviceTracker>,
+        f: impl FnOnce(&mut DiskInode) -> V,
+    ) -> Result<V> {
+        let mut manager = BLOCK_CACHE_MANAGER.lock();
+        let cache = manager.get(tracker, self.disk_inode_block_id as usize)?;
+        let mut cache_lock = cache.lock();
+        drop(manager);
+        cache_lock.modify(self.disk_inode_block_offset, f)
+    }
+
     /// Get the count of the leaf blocks in the disk inode
-    pub fn leaf_block_count(&self, device: &Arc<dyn BlockDevice>) -> Result<u32> {
-        self.read_disk_inode(device, |disk_inode| disk_inode.leaf_block_count())
+    ///
+    /// # Arguments
+    /// * tracker: the tracker for the block device which was mounted
+    ///
+    /// # Returns
+    /// * Ok(leaf block count)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn leaf_block_count(&self, tracker: &Arc<BlockDeviceTracker>) -> Result<u32> {
+        self.read_disk_inode(tracker, |disk_inode| disk_inode.leaf_block_count())
     }
 }
 // as file
-impl Inode {
+impl AbstractInode {
     /// Create a new Inode as file
     ///
     /// # Arguments
@@ -352,15 +405,28 @@ impl Inode {
     ///
     /// # Arguments
     /// * fs: the mutable reference of the file system which owns the current inode
-    pub fn clear_as_file(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<()> {
-        let device = fs.device();
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(
+    ///     FFSError::NoDroptableBlockCache |
+    ///     FFSError::DataOutOfBounds |
+    ///     FFSError::BitmapIndexDeallocated(bitmap_index)
+    /// )
+    fn clear_as_file(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<()> {
+        let tracker = fs.tracker();
         let data_block_ids =
-            self.modify_disk_inode(device, |disk_inode| disk_inode.clear_byte_size(device))??;
+            self.modify_disk_inode(tracker, |disk_inode| disk_inode.clear_byte_size(tracker))??;
         fs.bulk_dealloc_data_block_ids(data_block_ids)
     }
 }
 // as directory
-impl Inode {
+impl AbstractInode {
+    /// Convert file entry to abstract inode
+    ///
+    /// # Arguments
+    /// * fentry: the file entry to convert
+    /// * fs: the mutable reference of the file system which owns the current inode
     fn convert_to_inode(fentry: &Fentry, fs: &mut MutexGuard<FrontierFileSystem>) -> Self {
         let (disk_inode_block_id, disk_inode_block_offset) =
             fs.cal_disk_inode_position(fentry.inode_bitmap_index);
@@ -372,11 +438,25 @@ impl Inode {
         }
     }
 
+    /// Increase the current inode just one block size
+    ///
+    /// # Arguments
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(new block id)
+    /// * Err(
+    ///     DataOutOfBounds |
+    ///     BitmapExhausted(start_block_id) |
+    ///     BitmapIndexDeallocated(bitmap_index) |
+    ///     NoDroptableBlockCache |
+    ///     RawDeviceError(error code)
+    /// )
     fn increase_block(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<u32> {
-        let device = Arc::clone(fs.device());
-        let origin_leaf_blocks = self.leaf_block_count(&device)?;
-        self.modify_disk_inode(&device, |disk_inode| {
-            self.to_byte_size(
+        let tracker = Arc::clone(fs.tracker());
+        let origin_leaf_blocks = self.leaf_block_count(&tracker)?;
+        self.modify_disk_inode(&tracker, |disk_inode| {
+            Self::to_byte_size(
                 (origin_leaf_blocks + 1) as u64 * BLOCK_BYTE_SIZE as u64,
                 disk_inode,
                 fs,
@@ -385,6 +465,16 @@ impl Inode {
         Ok(origin_leaf_blocks)
     }
 
+    /// Read the child instance from block device cache
+    ///
+    /// # Arguments
+    /// * child: impl AsBytesMut
+    /// * start_offset: the byte offset to start reading from
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     fn read_child<T>(
         &self,
         child: &mut T,
@@ -395,16 +485,48 @@ impl Inode {
         T: AsBytesMut,
     {
         let buffer = child.as_bytes_mut();
-        let device = Arc::clone(fs.device());
-        self.read_disk_inode(&device, |disk_inode| {
-            match disk_inode.read_at(start_offset, buffer, &device) {
-                Ok(size) if size == buffer.len() as u64 => Ok(()),
+        let tracker = fs.tracker();
+        self.read_disk_inode(tracker, |disk_inode| {
+            match disk_inode.read_at(tracker, start_offset, buffer) {
+                Ok(size) if size == buffer.len() => Ok(()),
                 Ok(_) => Err(FFSError::DataOutOfBounds),
                 Err(e) => Err(e),
             }
         })?
     }
 
+    /// Read the raw byte data from block device cache
+    ///
+    /// # Arguments
+    /// * buffer: the byte slice which stores the raw data will be readed from
+    /// * start_offset: the byte offset to start reading from
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(the byte size of the data which have been readed from block device and written to the buffer)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn read_buffer(
+        &self,
+        buffer: &mut [u8],
+        start_offset: u64,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<usize> {
+        let tracker = fs.tracker();
+        self.read_disk_inode(tracker, |disk_inode| {
+            disk_inode.read_at(tracker, start_offset, buffer)
+        })?
+    }
+
+    /// Write the child instance to block device cache
+    ///
+    /// # Arguments
+    /// * child: impl AsBytes
+    /// * start_offset: the byte offset to start writting to
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     fn write_child<T>(
         &self,
         child: &T,
@@ -415,96 +537,208 @@ impl Inode {
         T: AsBytes,
     {
         let buffer = child.as_bytes();
-        self.modify_disk_inode(fs.device(), |disk_inode| {
-            match disk_inode.write_at(start_offset, buffer, fs.device()) {
-                Ok(size) if size == buffer.len() as u64 => Ok(()),
+        let tracker = fs.tracker();
+        self.modify_disk_inode(tracker, |disk_inode| {
+            match disk_inode.write_at(tracker, start_offset, buffer) {
+                Ok(size) if size == buffer.len() => Ok(()),
                 Ok(_) => Err(FFSError::DataOutOfBounds),
                 Err(e) => Err(e),
             }
         })?
     }
 
+    /// Write the raw byte data to block device cache
+    ///
+    /// # Arguments
+    /// * buffer: the byte slice which stores the raw data will be writted to block device cache
+    /// * start_offset: the byte offset to start writting to
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn write_buffer(
+        &self,
+        buffer: &[u8],
+        start_offset: u64,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<usize> {
+        let tracker = fs.tracker();
+        self.modify_disk_inode(tracker, |disk_inode| {
+            disk_inode.write_at(tracker, start_offset, buffer)
+        })?
+    }
+
+    /// Create a new iterator which will read all file entries from current directory
+    ///
+    /// # Arguments
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(map iterator)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn to_entry_iter<'a>(
+        &'a self,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<AbstractInodeEntryIterator> {
+        let tracker = fs.tracker();
+        let leaf_block_count = self.leaf_block_count(tracker)?;
+        Ok(AbstractInodeEntryIterator::new(self, leaf_block_count))
+    }
+
+    /// Create a new hard link to current directory
+    ///
+    /// # Arguments
+    /// * name: the name of the hard link
+    /// * inode_bitmap_index: the inode bitmap index which was refected by the hard link
+    /// * flags: the flags of the hard link
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn create_hard_link(
+        &self,
+        name: &str,
+        inode_bitmap_index: u32,
+        flags: FileFlags,
+        disk_inode: &mut DiskInode,
+        fs: &mut MutexGuard<'_, FrontierFileSystem>,
+    ) -> Result<()> {
+        let tracker = fs.tracker();
+        let hash_bytes = Fname::cal_name_hash(name);
+        let hash_index = Fname::cal_hash_index(hash_bytes[0]);
+        let fentry = Fentry::new(
+            inode_bitmap_index,
+            flags | FileFlags::HARD_LINK,
+            hash_bytes[1],
+        );
+        let start_offset = Fentry::cal_start_offset(0, hash_index, 0);
+        disk_inode.write_at(tracker, start_offset, fentry.as_bytes())?;
+        let fname = Fname::new(name);
+        let start_offset = Fname::cal_start_offset(0, hash_index, 0);
+        disk_inode.write_at(tracker, start_offset, fname.as_bytes())?;
+        Ok(())
+    }
+
+    /// Initialize the current inode as directory.
+    /// Each directory have the parent hard link and self hard link.
+    ///
+    /// # Arguments
+    /// * parent_inode_bitmap_index: the inode bitmap index of the parent directory
+    /// * parent_flags: the flags of the parent directory hard link
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     pub fn init_as_dir(
         &self,
         parent_inode_bitmap_index: u32,
         parent_flags: FileFlags,
         fs: &mut MutexGuard<'_, FrontierFileSystem>,
     ) -> Result<()> {
-        let device = Arc::clone(fs.device());
-        
-        self.modify_disk_inode(&device, |disk_inode| {
-            self.to_byte_size(BLOCK_BYTE_SIZE as u64, disk_inode, fs)?;
+        let tracker = Arc::clone(fs.tracker());
+        self.modify_disk_inode(&tracker, |disk_inode| {
+            Self::to_byte_size(BLOCK_BYTE_SIZE as u64, disk_inode, fs)?;
             // insert self as child directory
-            let hash_bytes = Fname::cal_name_hash(SELF_FNAME_STR);
-            let hash_index = Fname::cal_hash_index(hash_bytes[0]);
-            let fentry = Fentry::new(self.inode_bitmap_index, self.flags, hash_bytes[1]);
-            let start_offset = Fentry::cal_start_offset(0, hash_index, 0);
-            disk_inode.write_at(start_offset, fentry.as_bytes(), fs.device())?;
-            let fname = Fname::new(SELF_FNAME_STR);
-            let start_offset = Fname::cal_start_offset(0, hash_index, 0);
-            disk_inode.write_at(start_offset, fname.as_bytes(), fs.device())?;
+            self.create_hard_link(
+                SELF_FNAME_STR,
+                self.inode_bitmap_index,
+                self.flags,
+                disk_inode,
+                fs,
+            )?;
             // insert parent as child directory
-            let hash_bytes = Fname::cal_name_hash(PARENT_FNAME_STR);
-            let hash_index = Fname::cal_hash_index(hash_bytes[0]);
-            let fentry = Fentry::new(parent_inode_bitmap_index, parent_flags, hash_bytes[1]);
-            let start_offset = Fentry::cal_start_offset(0, hash_index, 0);
-            disk_inode.write_at(start_offset, fentry.as_bytes(), fs.device())?;
-            let fname = Fname::new(SELF_FNAME_STR);
-            let start_offset = Fname::cal_start_offset(0, hash_index, 0);
-            disk_inode.write_at(start_offset, fname.as_bytes(), fs.device())?;
-            Ok(())
+            self.create_hard_link(
+                PARENT_FNAME_STR,
+                parent_inode_bitmap_index,
+                parent_flags,
+                disk_inode,
+                fs,
+            )
         })?
     }
 
-    pub fn dir_is_empty(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<bool> {
-        let device = Arc::clone(fs.device());
-        let total_leaf_indexes = self.leaf_block_count(&device)?;
-        let mut fname = Fname::empty();
-        let mut fentry = Fentry::empty();
-        for leaf_index in 0..total_leaf_indexes {
-            for hash_index in 0..HASH_GROUP_COUNT {
-                for item_index in 0..HASH_GROUP_ITEM_COUNT {
-                    let start_offset = Fname::cal_start_offset(leaf_index, hash_index, item_index);
-                    self.read_child(&mut fname, start_offset, fs)?;
-                    let name = fname.to_str();
-                    if name == SELF_FNAME_STR || name == PARENT_FNAME_STR {
-                        continue;
-                    }
-                    let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
-                    self.read_child(&mut fentry, start_offset, fs)?;
-                    if fentry.is_valid() {
-                        return Ok(false);
-                    }
-                }
-            }
-        }
-        Ok(true)
-    }
-
-    #[inline(always)]
+    /// Get the self abstract inode
     pub fn self_inode(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Self {
         self.get_child_inode(SELF_FNAME_STR, fs).unwrap().unwrap()
     }
 
-    #[inline(always)]
+    /// Get the current self abstract inode's parent directory abstract inode
     pub fn parent_inode(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Self {
         self.get_child_inode(PARENT_FNAME_STR, fs).unwrap().unwrap()
     }
 
-    pub fn get_child_inode(
+    /// Check if the current directory is empty.
+    /// Only self file name and parent file name can be exists.
+    ///
+    /// # Arguments
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// * Returns
+    /// * Ok(if is empty)
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    pub fn dir_is_empty(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<bool> {
+        let mut iterator = self.to_entry_iter(fs)?;
+        loop {
+            let name = iterator.fname.to_str();
+            if name != SELF_FNAME_STR && name != PARENT_FNAME_STR && iterator.fentry.is_valid() {
+                return Ok(false);
+            }
+            if !iterator.next(fs)? {
+                return Ok(true);
+            }
+        }
+    }
+
+    /// Get all the child's names, excluding the self directory name and parent directory name.
+    ///
+    /// # Arguments
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// Ok(Vec<String>)
+    /// Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    pub fn list_child_names(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<Vec<String>> {
+        let mut iterator = self.to_entry_iter(fs)?;
+        let mut names = Vec::new();
+        loop {
+            let name = iterator.fname.to_str();
+            if name != SELF_FNAME_STR && name != PARENT_FNAME_STR && iterator.fentry.is_valid() {
+                names.push(name.to_string());
+            }
+            if !iterator.next(fs)? {
+                break;
+            }
+        }
+        Ok(names)
+    }
+
+    /// Get the child abstract inode by name
+    ///
+    /// # Arguments
+    /// * name: The name of child abstract inode will be find
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(None): child does not exist
+    /// * Ok(Some(child)): child exists and returns the child
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn get_child_inode(
         &self,
         name: &str,
         fs: &mut MutexGuard<FrontierFileSystem>,
     ) -> Result<Option<Self>> {
         let hash = Fname::cal_name_hash(name);
         let mut hash_byte = hash[0];
-        let mut hash_index = Fname::cal_hash_index(hash_byte);
         let mut leaf_index = 0;
         let mut fentry = Fentry::empty();
         let mut fname = Fname::empty();
         let mut fheader = Fheader::empty();
-        for depth in 0..DENTRY_MAX_DEPTH {
-            let next_hash_byte = hash[depth + 1];
+        for depth in 1..=DENTRY_MAX_DEPTH {
+            let next_hash_byte = hash[depth];
+            let hash_index = Fname::cal_hash_index(hash_byte);
             for item_index in 0..HASH_GROUP_ITEM_COUNT {
                 let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
                 self.read_child(&mut fentry, start_offset, fs)?;
@@ -523,41 +757,32 @@ impl Inode {
             }
             let start_offset = Fheader::cal_start_offset(leaf_index);
             self.read_child(&mut fheader, start_offset, fs)?;
-            hash_byte = next_hash_byte;
-            hash_index = Fname::cal_hash_index(hash_byte);
             leaf_index = fheader.next_leaf_indexes[hash_index];
             if leaf_index == 0 {
                 return Ok(None);
             }
+            hash_byte = next_hash_byte;
         }
         Ok(None)
     }
 
-    pub fn list_child_name(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<Vec<String>> {
-        let device = Arc::clone(fs.device());
-        let leaf_block_indexes = self.leaf_block_count(&device)?;
-        let mut names = Vec::new();
-        let mut fentry = Fentry::empty();
-        let mut fname = Fname::empty();
-        for leaf_index in 0..leaf_block_indexes {
-            for hash_index in 0..HASH_GROUP_COUNT {
-                for item_index in 0..HASH_GROUP_ITEM_COUNT {
-                    let fentry_start_offset =
-                        Fentry::cal_start_offset(leaf_index, hash_index, item_index);
-                    self.read_child(&mut fentry, fentry_start_offset, fs)?;
-                    if !fentry.is_valid() {
-                        continue;
-                    }
-                    let fname_start_offset =
-                        Fname::cal_start_offset(leaf_index, hash_index, item_index);
-                    self.write_child(&mut fname, fname_start_offset, fs)?;
-                    names.push(fname.to_str().to_string())
-                }
-            }
-        }
-        Ok(names)
-    }
-
+    /// Create a new child abstract inode.
+    ///
+    /// # Arguments
+    /// * name: The name of the child abstract inode
+    /// * flags: The flags of the child abstract inode
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(child)
+    /// * Err(
+    ///     DuplicatedFname(name, inode bitmap index) |
+    ///     BitmapExhausted(start_block_id) |
+    ///     BitmapIndexDeallocated(bitmap_index) |
+    ///     DataOutOfBounds |
+    ///     NoDroptableBlockCache |
+    ///     RawDeviceError(error code)
+    /// )
     pub fn create_child_inode(
         &self,
         name: &str,
@@ -566,163 +791,292 @@ impl Inode {
     ) -> Result<Self> {
         let hash = Fname::cal_name_hash(name);
         let mut hash_byte = hash[0];
-        let mut hash_index = Fname::cal_hash_index(hash_byte);
+        let mut next_hash_byte = hash[1];
         let mut leaf_index = 0;
         let mut fentry = Fentry::empty();
         let mut fname = Fname::empty();
         let mut fheader = Fheader::empty();
-        for depth in 0..DENTRY_MAX_DEPTH {
-            let next_hash_byte = hash[depth + 1];
+        let mut end_hash_index = 0;
+        let mut end_item_index = 0;
+        'outter: for depth in 1..=DENTRY_MAX_DEPTH {
+            let hash_index = Fname::cal_hash_index(hash_byte);
+            next_hash_byte = hash[depth];
             for item_index in 0..HASH_GROUP_ITEM_COUNT {
-                let fentry_start_offset =
-                    Fentry::cal_start_offset(leaf_index, hash_index, item_index);
-                let fname_start_offset =
-                    Fname::cal_start_offset(leaf_index, hash_index, item_index);
-                self.read_child(&mut fentry, fentry_start_offset, fs)?;
+                let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
+                self.read_child(&mut fentry, start_offset, fs)?;
                 if !fentry.is_valid() {
-                    let inode_bitmap_index = fs.alloc_inode_bitmap_index()?;
-                    fentry = Fentry::new(inode_bitmap_index, flags, next_hash_byte);
-                    fname = Fname::new(name);
-                    self.write_child(&mut fentry, fentry_start_offset, fs)?;
-                    self.write_child(&mut fname, fname_start_offset, fs)?;
-                    let inode = Self::convert_to_inode(&fentry, fs);
-                    inode.modify_disk_inode(fs.device(), |disk_inode| disk_inode.initialize())?;
-                    if flags.is_dir() {
-                        inode.init_as_dir(self.inode_bitmap_index, self.flags, fs)?;
-                    }
-                    return Ok(inode);
+                    end_hash_index = hash_index;
+                    end_item_index = item_index;
+                    break 'outter;
                 }
                 if fentry.next_hash_byte != next_hash_byte {
                     continue;
                 }
-                self.read_child(&mut fname, fname_start_offset, fs)?;
-                if fname.is_equal(name) {
-                    return Err(FFSError::DuplicatedFname(fentry.inode_bitmap_index));
+                let start_offset = Fname::cal_start_offset(leaf_index, hash_index, item_index);
+                self.read_child(&mut fname, start_offset, fs)?;
+                if !fname.is_equal(name) {
+                    continue;
                 }
+                return Err(FFSError::DuplicatedFname(
+                    name.to_string(),
+                    self.inode_bitmap_index,
+                ));
             }
-            let fheader_start_offset = Fheader::cal_start_offset(leaf_index);
-            self.read_child(&mut fheader, fheader_start_offset, fs)?;
-            hash_byte = next_hash_byte;
-            hash_index = Fname::cal_hash_index(hash_byte);
+            let start_offset = Fheader::cal_start_offset(leaf_index);
+            self.read_child(&mut fheader, start_offset, fs)?;
             leaf_index = fheader.next_leaf_indexes[hash_index];
-            if leaf_index != 0 {
-                continue;
-            }
-            if depth != (DENTRY_MAX_DEPTH - 1) {
+            if leaf_index == 0 {
+                if depth == DENTRY_MAX_DEPTH {
+                    return Err(FFSError::DataOutOfBounds);
+                }
                 leaf_index = self.increase_block(fs)?;
                 fheader.next_leaf_indexes[hash_index] = leaf_index;
-                self.write_child(&mut fheader, fheader_start_offset, fs)?;
-                continue;
+                self.write_child(&fheader, start_offset, fs)?;
             }
-            break;
+            hash_byte = next_hash_byte;
         }
-        Err(FFSError::DataOutOfBounds)
+        let inode_bitmap_index = fs.alloc_inode_bitmap_index()?;
+        fentry = Fentry::new(inode_bitmap_index, flags, next_hash_byte);
+        let start_offset = Fentry::cal_start_offset(leaf_index, end_hash_index, end_item_index);
+        self.write_child(&fentry, start_offset, fs)?;
+        fname = Fname::new(name);
+        let start_offset = Fname::cal_start_offset(leaf_index, end_hash_index, end_item_index);
+        self.write_child(&fname, start_offset, fs)?;
+        Ok(Self::convert_to_inode(&fentry, fs))
     }
 
+    /// Remove child inode from current directory abstract inode
+    ///
+    /// # Arguments
+    /// * name: The name of the child will be removed
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(
+    ///     FnameDoesNotExist(name, inode bitmap index) |
+    ///     DataOutOfBounds |
+    ///     BitmapIndexDeallocated(bitmap_index) |
+    ///     NoDroptableBlockCache |
+    ///     RawDeviceError(error code) |
+    ///     DeleteNonEmptyDirectory(name, inode bitmap index)
+    /// )
     pub fn remove_child_inode(
         &self,
         name: &str,
         fs: &mut MutexGuard<FrontierFileSystem>,
     ) -> Result<()> {
         if name == SELF_FNAME_STR || name == PARENT_FNAME_STR {
-            return Err(FFSError::FnameDoesNotExist(self.inode_bitmap_index));
+            return Err(FFSError::FnameDoesNotExist(
+                name.to_string(),
+                self.inode_bitmap_index,
+            ));
         }
         let hash = Fname::cal_name_hash(name);
         let mut hash_byte = hash[0];
-        let mut hash_index = Fname::cal_hash_index(hash_byte);
-        let mut last_leaf_index = 0;
         let mut fentry = Fentry::empty();
         let mut fname = Fname::empty();
         let mut fheader = Fheader::empty();
-        let mut dst_fentry_start_offset = 0;
-        let mut dst_fname_start_offset = 0;
-        let mut src_fentry_start_offset = 0;
-        let mut src_fname_start_offset = 0;
-        let mut founded = false;
-        'outter: for depth in 0..DENTRY_MAX_DEPTH {
-            let next_hash_byte = hash[depth + 1];
+        let mut hit_depth = 0;
+        let mut leaf_index = 0u32;
+        let mut dst_leaf_index = 0u32;
+        let mut dst_hash_index = 0usize;
+        let mut dst_item_index = 0usize;
+        let mut founeded = false;
+        'outter: for depth in 1..=DENTRY_MAX_DEPTH {
+            let hash_index = Fname::cal_hash_index(hash_byte);
+            let next_hash_byte = hash[depth];
             for item_index in 0..HASH_GROUP_ITEM_COUNT {
-                let fentry_start_offset =
-                    Fentry::cal_start_offset(last_leaf_index, hash_index, item_index);
-                let fname_start_offset =
-                    Fname::cal_start_offset(last_leaf_index, hash_index, item_index);
-                self.read_child(&mut fentry, fentry_start_offset, fs)?;
-                if founded {
-                    if fentry.is_valid() {
-                        src_fentry_start_offset = fentry_start_offset;
-                        src_fname_start_offset = fname_start_offset;
-                    } else {
-                        break 'outter;
-                    }
-                } else {
-                    if !fentry.is_valid() {
-                        break 'outter;
-                    }
-                    if fentry.next_hash_byte != next_hash_byte {
-                        continue;
-                    }
-                    self.read_child(&mut fname, fname_start_offset, fs)?;
-                    if !fname.is_equal(name) {
-                        continue;
-                    }
-                    if fentry.is_dir() && Self::convert_to_inode(&fentry, fs).dir_is_empty(fs)? {
-                        return Err(FFSError::DeleteNonEmptyDirectory(fentry.inode_bitmap_index));
-                    }
-                    dst_fentry_start_offset = fentry_start_offset;
-                    dst_fname_start_offset = fname_start_offset;
-                    founded = true;
+                let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
+                self.read_child(&mut fentry, start_offset, fs)?;
+                if !fentry.is_valid() {
+                    break 'outter;
                 }
+                if fentry.next_hash_byte != next_hash_byte {
+                    continue;
+                }
+                let start_offset = Fname::cal_start_offset(leaf_index, hash_index, item_index);
+                self.read_child(&mut fname, start_offset, fs)?;
+                if !fname.is_equal(name) {
+                    continue;
+                }
+                let child_inode = Self::convert_to_inode(&fentry, fs);
+                if fentry.is_dir() && !child_inode.dir_is_empty(fs)? {
+                    return Err(FFSError::DeleteNonEmptyDirectory(
+                        name.to_string(),
+                        self.inode_bitmap_index,
+                    ));
+                }
+                if !fentry.is_hard_link() {
+                    child_inode.clear_as_file(fs)?;
+                    fs.dealloc_inode_bitmap_index(fentry.inode_bitmap_index)?;
+                }
+                hit_depth = depth;
+                dst_leaf_index = leaf_index;
+                dst_hash_index = hash_index;
+                dst_item_index = item_index;
+                founeded = true;
+                break 'outter;
             }
-            let start_offset = Fheader::cal_start_offset(last_leaf_index);
+            let start_offset = Fheader::cal_start_offset(leaf_index);
             self.read_child(&mut fheader, start_offset, fs)?;
-            hash_byte = next_hash_byte;
-            hash_index = Fname::cal_hash_index(hash_byte);
-            let current_leaf_index = fheader.next_leaf_indexes[hash_index];
-            if current_leaf_index == 0 {
+            leaf_index = fheader.next_leaf_indexes[hash_index];
+            if leaf_index == 0 {
                 break;
             }
-            last_leaf_index = current_leaf_index;
+            hash_byte = next_hash_byte;
         }
-        if !founded {
-            return Err(FFSError::FnameDoesNotExist(self.inode_bitmap_index));
+        if !founeded {
+            return Err(FFSError::FnameDoesNotExist(
+                name.to_string(),
+                self.inode_bitmap_index,
+            ));
         }
-        // dealloc the entry's disk inode
-        self.read_child(&mut fentry, dst_fentry_start_offset, fs)?;
-        fs.dealloc_inode_bitmap_index(fentry.inode_bitmap_index)?;
-        let inode = Self::convert_to_inode(&fentry, fs);
-        inode.clear_as_file(fs)?;
-        // find the prossible existing child in the last leaf index which can relpace the deleted child
-        if src_fentry_start_offset != 0 && src_fname_start_offset != 0 {
-            self.read_child(&mut fentry, src_fentry_start_offset, fs)?;
-            self.read_child(&mut fname, src_fname_start_offset, fs)?;
-            self.write_child(&mut fentry, dst_fentry_start_offset, fs)?;
-            self.write_child(&mut fname, dst_fname_start_offset, fs)?;
-            self.write_child(&mut Fentry::empty(), src_fentry_start_offset, fs)?;
-            self.write_child(&mut Fname::empty(), src_fname_start_offset, fs)?;
+        let (src_leaf_index, src_hash_index, src_item_index) =
+            self.find_ending_child_inode(dst_leaf_index, dst_hash_index, dst_item_index, fs)?;
+        if src_leaf_index != dst_leaf_index
+            || src_hash_index != dst_hash_index
+            || src_item_index != dst_item_index
+        {
+            let start_offset =
+                Fentry::cal_start_offset(src_leaf_index, src_hash_index, src_item_index);
+            self.read_child(&mut fentry, start_offset, fs)?;
+            let start_offset =
+                Fname::cal_start_offset(src_leaf_index, src_hash_index, src_item_index);
+            self.read_child(&mut fname, start_offset, fs)?;
+            fentry.next_hash_byte = Fname::cal_name_hash(fname.to_str())[hit_depth];
+            let start_offset =
+                Fentry::cal_start_offset(dst_leaf_index, dst_hash_index, dst_item_index);
+            self.write_child(&fentry, start_offset, fs)?;
+            let start_offset =
+                Fname::cal_start_offset(dst_leaf_index, dst_hash_index, dst_item_index);
+            self.write_child(&fname, start_offset, fs)?;
+            dst_leaf_index = src_leaf_index;
+            dst_hash_index = src_hash_index;
+            dst_item_index = src_item_index;
+        }
+        let start_offset = Fentry::cal_start_offset(dst_leaf_index, dst_hash_index, dst_item_index);
+        fentry.clear();
+        self.write_child(&fentry, start_offset, fs)?;
+        let start_offset = Fname::cal_start_offset(dst_leaf_index, dst_hash_index, dst_item_index);
+        fname.clear();
+        self.write_child(&fname, start_offset, fs)?;
+        if dst_item_index == 0 {
+            self.clear_empty_ending_leaf_indexes(fs)
         } else {
-            self.write_child(&mut Fentry::empty(), dst_fentry_start_offset, fs)?;
-            self.write_child(&mut Fname::empty(), dst_fname_start_offset, fs)?;
+            Ok(())
         }
-        // try to release the last leaf index if it is empty
-        self.clear_empty_ending_leaf_indexes(fs)
     }
 
+    /// Find the ending child inode after input destination child inode,
+    /// which will be used to switch position with input destination child inode.
+    ///
+    /// the ending child inode have three cases:
+    /// * 1 - ending child inode is the input child inode itself
+    /// * 2 - ending child inode and input child inode are storing in the same leaf block
+    /// * 3 - ending child inode and input child inode are storing in the different leaf blocks
+    ///
+    /// # Arguments
+    /// * dst_leaf_index: the leaf index of the input child inode
+    /// * dst_hash_index: the hash index of the input child inode
+    /// * dst_item_index: the item index of the input child inode
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok((src leaf index, src hash index, src item index))
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn find_ending_child_inode(
+        &self,
+        dst_leaf_index: u32,
+        dst_hash_index: usize,
+        dst_item_index: usize,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<(u32, usize, usize)> {
+        let mut fheader = Fheader::empty();
+        let start_offset = Fheader::cal_start_offset(dst_leaf_index);
+        self.read_child(&mut fheader, start_offset, fs)?;
+        let next_leaf_index = fheader.next_leaf_indexes[dst_hash_index];
+        if next_leaf_index != 0 {
+            return self.find_other_leaf_ending_child_inode(next_leaf_index, fs);
+        }
+        let mut src_item_index = dst_item_index;
+        let mut fentry = Fentry::empty();
+        for item_index in (dst_item_index + 1)..HASH_GROUP_ITEM_COUNT {
+            let start_offset = Fentry::cal_start_offset(dst_leaf_index, dst_hash_index, item_index);
+            self.read_child(&mut fentry, start_offset, fs)?;
+            if fentry.is_valid() {
+                src_item_index = item_index;
+            }
+        }
+        Ok((dst_leaf_index, dst_hash_index, src_item_index))
+    }
+
+    /// Find the ending child inode after input ending child inode, which is storing in other leaf blocks.
+    ///
+    /// # Arguments
+    /// * leaf_index: The index of the leaf blocks
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok((src leaf index, src hash index, src item index))
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn find_other_leaf_ending_child_inode(
+        &self,
+        leaf_index: u32,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<(u32, usize, usize)> {
+        let mut fheader = Fheader::empty();
+        let start_offset = Fheader::cal_start_offset(leaf_index);
+        self.read_child(&mut fheader, start_offset, fs)?;
+        // check if the current blocks has more deeeper blocks
+        for next_leaf_index in fheader.next_leaf_indexes {
+            if next_leaf_index == 0 {
+                continue;
+            }
+            return self.find_other_leaf_ending_child_inode(next_leaf_index, fs);
+        }
+        let mut src_hash_index = 0;
+        let mut src_item_index = 0;
+        let mut fentry = Fentry::empty();
+        for hash_index in 0..HASH_GROUP_COUNT {
+            for item_index in 0..HASH_GROUP_ITEM_COUNT {
+                let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
+                self.read_child(&mut fentry, start_offset, fs)?;
+                if fentry.is_valid() {
+                    src_hash_index = hash_index;
+                    src_item_index = item_index;
+                    continue;
+                }
+                return Ok((leaf_index, src_hash_index, src_item_index));
+            }
+        }
+        return Ok((leaf_index, src_hash_index, src_item_index));
+    }
+
+    /// Clear all possible existing empty leaf blocks.
+    /// Each time we remove child inode, it is possible the last child inode in the blocks,
+    /// so we should try to clear those blocks.
+    ///
+    /// # Arguments
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
     fn clear_empty_ending_leaf_indexes(
         &self,
         fs: &mut MutexGuard<FrontierFileSystem>,
     ) -> Result<()> {
-        let device = Arc::clone(fs.device());
-        let total_leaf_indexes = self.leaf_block_count(&device)?;
+        let tracker = Arc::clone(fs.tracker());
+        let total_leaf_indexes = self.leaf_block_count(&tracker)?;
         let mut inused_leaf_indexes = total_leaf_indexes;
         let mut fentry = Fentry::empty();
         'outter: for leaf_index in (0..total_leaf_indexes).rev() {
             for hash_index in 0..HASH_GROUP_COUNT {
-                for item_index in 0..HASH_GROUP_ITEM_COUNT {
-                    let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, item_index);
-                    self.read_child(&mut fentry, start_offset, fs)?;
-                    if fentry.is_valid() {
-                        break 'outter;
-                    }
+                let start_offset = Fentry::cal_start_offset(leaf_index, hash_index, 0);
+                self.read_child(&mut fentry, start_offset, fs)?;
+                if fentry.is_valid() {
+                    break 'outter;
                 }
             }
             inused_leaf_indexes -= 1;
@@ -730,9 +1084,8 @@ impl Inode {
         if inused_leaf_indexes == total_leaf_indexes {
             return Ok(());
         }
-        let device = Arc::clone(fs.device());
-        self.modify_disk_inode(&device, |disk_inode| {
-            self.to_byte_size(
+        self.modify_disk_inode(&tracker, |disk_inode| {
+            Self::to_byte_size(
                 inused_leaf_indexes as u64 * BLOCK_BYTE_SIZE as u64,
                 disk_inode,
                 fs,
@@ -759,7 +1112,7 @@ impl Inode {
             if !founded {
                 continue;
             }
-            self.write_child(&mut fheader, start_offset, fs)?;
+            self.write_child(&fheader, start_offset, fs)?;
             if clear_leaf_indexes.len() == 0 {
                 break;
             }
@@ -768,11 +1121,188 @@ impl Inode {
     }
 }
 
+/// The iterator for abstract inode structures, which will generate all the valid file entry and file name.
+struct AbstractInodeEntryIterator<'a> {
+    inode: &'a AbstractInode,
+    leaf_block_count: u32,
+    leaf_index: u32,
+    hash_index: usize,
+    item_index: usize,
+    fentry: Fentry,
+    fname: Fname,
+    has_next: bool,
+}
+impl<'a> AbstractInodeEntryIterator<'a> {
+    /// Create a new iterator
+    ///
+    /// * inode: The reference to the abstract inode
+    /// * leaf_block_count: The number of leaf blocks of the abstract inode
+    fn new(inode: &'a AbstractInode, leaf_block_count: u32) -> Self {
+        Self {
+            inode,
+            leaf_block_count,
+            leaf_index: 0,
+            hash_index: 0,
+            item_index: 0,
+            fentry: Fentry::empty(),
+            fname: Fname::empty(),
+            has_next: true,
+        }
+    }
+
+    /// Read the fentry into iterator
+    ///
+    /// # Arguments
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn read_fentry(&mut self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<()> {
+        let start_offset =
+            Fentry::cal_start_offset(self.leaf_index, self.hash_index, self.item_index);
+        self.inode.read_child(&mut self.fentry, start_offset, fs)
+    }
+
+    /// Read the fname into iterator
+    ///
+    /// # Arguments
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// # Returns
+    /// * Ok(())
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn read_fname(&mut self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<()> {
+        let start_offset =
+            Fname::cal_start_offset(self.leaf_index, self.hash_index, self.item_index);
+        self.inode.read_child(&mut self.fname, start_offset, fs)
+    }
+
+    /// Check if the iterator has next, and change the position indexes to the next
+    /// If returns true, the iterator has next entry,
+    /// and the file entry and file name was loaded successfully.
+    /// If returns false, the iterator has no next entry
+    ///
+    /// # Arguments
+    /// * fs: the mutable reference of the file system which owns the current inode
+    ///
+    /// * Returns
+    /// * Ok(true): has next entry
+    /// * Ok(false): has no next entry
+    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    fn next(&mut self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<bool> {
+        if !self.has_next {
+            return Ok(false);
+        }
+        loop {
+            if self.leaf_index >= self.leaf_block_count {
+                self.has_next = false;
+                return Ok(false);
+            }
+            self.read_fentry(fs)?;
+            self.read_fname(fs)?;
+            match (self.hash_index, self.item_index) {
+                (HASH_GROUP_END_INDEX, HASH_GROUP_ITEM_END_INDEX) => {
+                    self.hash_index = 0;
+                    self.item_index = 0;
+                    self.leaf_index += 1;
+                }
+                (_, HASH_GROUP_ITEM_END_INDEX) => {
+                    self.item_index = 0;
+                    self.hash_index += 1;
+                }
+                _ => {
+                    self.item_index += 1;
+                }
+            }
+            if !self.fentry.is_valid() {
+                continue;
+            }
+            return Ok(true);
+        }
+    }
+}
+
+pub struct Inode {
+    inner: AbstractInode,
+    fs: Arc<Mutex<FrontierFileSystem>>,
+}
+impl Inode {
+    pub fn new(inner: AbstractInode, fs: Arc<Mutex<FrontierFileSystem>>) -> Self {
+        Inode { inner, fs }
+    }
+
+    pub fn flags(&self) -> FileFlags {
+        self.inner.flags
+    }
+
+    pub fn inode_bitmap_index(&self) -> u32 {
+        self.inner.inode_bitmap_index
+    }
+
+    pub fn read_buffer(&self, buffer: &mut [u8], start_offset: u64) -> Result<usize> {
+        let mut fs = self.fs.lock();
+        self.inner.read_buffer(buffer, start_offset, &mut fs)
+    }
+
+    pub fn write_buffer(&self, buffer: &[u8], start_offset: u64) -> Result<usize> {
+        let mut fs = self.fs.lock();
+        self.inner.write_buffer(buffer, start_offset, &mut fs)
+    }
+
+    pub fn read_all(&self) -> Result<Vec<u8>> {
+        let mut result = Vec::new();
+        let mut buffer = [0u8; BLOCK_BYTE_SIZE as usize];
+        let mut start_offset = 0;
+        loop {
+            let read_size = self.read_buffer(&mut buffer, start_offset)?;
+            if read_size == 0 {
+                break;
+            }
+            result.extend_from_slice(&buffer[0..read_size]);
+            start_offset += read_size as u64;
+        }
+        Ok(result)
+    }
+
+    pub fn list_child_names(&self) -> Result<Vec<String>> {
+        let mut fs = self.fs.lock();
+        self.inner.list_child_names(&mut fs)
+    }
+
+    pub fn to_byte_size(&self, new_byte_size: u64) -> Result<()> {
+        let mut fs = self.fs.lock();
+        let tracker = Arc::clone(fs.tracker());
+        self.inner.modify_disk_inode(&tracker, |disk_inode| {
+            AbstractInode::to_byte_size(new_byte_size, disk_inode, &mut fs)
+        })?
+    }
+
+    pub fn get_child_inode(&self, name: &str) -> Result<Option<Self>> {
+        let mut fs = self.fs.lock();
+        if let Some(abs_inode) = self.inner.get_child_inode(name, &mut fs)? {
+            Ok(Some(Self::new(abs_inode, Arc::clone(&self.fs))))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn create_child_inode(&self, name: &str, flags: FileFlags) -> Result<Self> {
+        let mut fs = self.fs.lock();
+        let abs_inode = self.inner.create_child_inode(name, flags, &mut fs)?;
+        Ok(Self::new(abs_inode, Arc::clone(&self.fs)))
+    }
+
+    pub fn remove_child_inode(&self, name: &str) -> Result<()> {
+        let mut fs = self.fs.lock();
+        self.inner.remove_child_inode(name, &mut fs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
 
-    use crate::block::{BlockDevice, MockBlockDevice};
+    use crate::block::{BlockDevice, MemoryBlockDevice, BLOCK_DEVICE_REGISTER};
     use crate::vfs::FS;
 
     use super::super::{FileSystem, InitMode};
@@ -786,6 +1316,34 @@ mod tests {
             BLOCK_BYTE_SIZE,
             FHEADER_BYTE_SIZE + (FNAME_BYTE_SIZE + FENTRY_BYTE_SIZE) * HASH_TOTAL_ITEM_COUNT
         )
+    }
+
+    #[test]
+    fn test_fname_cal_hash() {
+        assert_eq!(Fname::cal_hash(&[0, 0]), Fname::cal_hash(&[0, 0]));
+        assert_ne!(Fname::cal_hash(&[0, 1]), Fname::cal_hash(&[0, 0]));
+    }
+
+    #[test]
+    fn test_fname_cal_hash_index() {
+        assert_eq!(0, Fname::cal_hash_index(0));
+        assert_eq!(1, Fname::cal_hash_index(1));
+        assert_eq!(2, Fname::cal_hash_index(2));
+        assert_eq!(3, Fname::cal_hash_index(3));
+        assert_eq!(0, Fname::cal_hash_index(4));
+    }
+
+    #[test]
+    fn test_fname_cal_name_hash() {
+        assert_eq!(Fname::cal_name_hash("a"), Fname::cal_name_hash("a"));
+        assert_ne!(Fname::cal_name_hash("a"), Fname::cal_name_hash("b"));
+    }
+
+    #[test]
+    fn test_fname_to_str() {
+        assert_eq!("", Fname::empty().to_str());
+        assert_eq!("a", Fname::new("a").to_str());
+        assert_eq!("ab", Fname::new("ab").to_str());
     }
 
     #[test]
@@ -806,111 +1364,332 @@ mod tests {
     }
 
     #[test]
-    fn test_inode_to_byte_size_and_leaf_block_count() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &device).unwrap();
-        let inode = fs.root_inode();
+    fn test_abstract_inode_to_byte_size_and_leaf_block_count() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &tracker).unwrap();
         let mut mfs = fs.lock();
-        let device = Arc::clone(&mfs.device());
-        assert_eq!(1, inode.leaf_block_count(&device).unwrap());
-        assert!(inode
-            .modify_disk_inode(&device, |disk_inode| {
-                assert!(inode
-                    .to_byte_size(2 * BLOCK_BYTE_SIZE as u64, disk_inode, &mut mfs)
-                    .is_ok());
+        let abstract_inode = mfs.root_abstract_inode();
+        assert_eq!(1, abstract_inode.leaf_block_count(&tracker).unwrap());
+        assert!(abstract_inode
+            .modify_disk_inode(&tracker, |disk_inode| {
+                assert!(AbstractInode::to_byte_size(
+                    2 * BLOCK_BYTE_SIZE as u64,
+                    disk_inode,
+                    &mut mfs
+                )
+                .is_ok());
             })
             .is_ok());
-        assert_eq!(2, inode.leaf_block_count(&device).unwrap());
-        assert!(inode
-            .modify_disk_inode(&device, |disk_inode| {
-                assert!(inode
-                    .to_byte_size(1 * BLOCK_BYTE_SIZE as u64, disk_inode, &mut mfs)
-                    .is_ok());
+        assert_eq!(2, abstract_inode.leaf_block_count(&tracker).unwrap());
+        assert!(abstract_inode
+            .modify_disk_inode(&tracker, |disk_inode| {
+                assert!(AbstractInode::to_byte_size(
+                    1 * BLOCK_BYTE_SIZE as u64,
+                    disk_inode,
+                    &mut mfs
+                )
+                .is_ok());
             })
             .is_ok());
-        assert_eq!(1, inode.leaf_block_count(&device).unwrap());
+        assert_eq!(1, abstract_inode.leaf_block_count(&tracker).unwrap());
     }
 
     #[test]
-    fn test_dir_create_and_get_and_remove_child_inode() {
-        let device: Arc<dyn BlockDevice> = Arc::new(MockBlockDevice::new());
-        // let disk_inode = DiskInode::get(0, 0, &device).unwrap();
-        let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &device).unwrap();
-        let inode = fs.root_inode();
+    fn test_abstract_inode_write_and_read_buffer() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &tracker).unwrap();
         let mut mfs = fs.lock();
-        let device = Arc::clone(mfs.device());
-        // test get and delete entry from empty directory
-        assert!(inode
-            .get_child_inode("test", &mut mfs)
-            .is_ok_and(|i| i.is_none()));
-        assert!(inode
-            .remove_child_inode("test", &mut mfs)
-            .is_err_and(|e| e.is_fnamedoesnotexist()));
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 1);
-        // test insert and delete entry into empty directory
-        assert!(inode
-            .create_child_inode("test", FileFlags::empty(), &mut mfs)
-            .is_ok_and(|i| i.flags.is_valid() && !i.flags.is_dir() && i.inode_bitmap_index == 1));
-        assert!(inode
-            .get_child_inode("other", &mut mfs)
-            .is_ok_and(|i| i.is_none()));
-        assert!(inode
-            .get_child_inode("test", &mut mfs)
-            .unwrap()
-            .is_some_and(|i| i.flags.is_valid() && !i.flags.is_dir() && i.inode_bitmap_index == 1));
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 1);
-        assert!(inode.remove_child_inode("test", &mut mfs).is_ok());
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 1);
-        // test insert entry into a non-empty directory
-        assert!(inode
-            .create_child_inode("other", FileFlags::DIR, &mut mfs)
-            .is_ok_and(|i| i.flags.is_valid() && i.flags.is_dir() && i.inode_bitmap_index == 1));
-        assert!(inode
-            .get_child_inode("test", &mut mfs)
-            .is_ok_and(|i| i.is_none()));
-        assert!(inode
-            .get_child_inode("other", &mut mfs)
-            .unwrap()
-            .is_some_and(|i| i.flags.is_valid() && i.flags.is_dir() && i.inode_bitmap_index == 1));
-        assert!(inode.leaf_block_count(&device).is_ok_and(|i| i == 1));
-        // test insert same hash byte fentry into directory
-        // number in list have the same prefix hash byte 9f with "test"
-        // those number name files will be stored in the leaf indexes [0, 0, 0, 0, 1, 2, 3, 2, 3]
-        for (index, x) in vec![35, 114, 249, 655, 803, 1084, 1500, 1764, 2167]
-            .iter()
-            .enumerate()
-        {
-            assert!(inode
-                .create_child_inode(x.to_string().as_str(), FileFlags::empty(), &mut mfs)
-                .is_ok_and(|i| i.flags.is_valid()
-                    && !i.flags.is_dir()
-                    && i.inode_bitmap_index == (2 + index as u32)));
+        let abstract_inode = mfs.root_abstract_inode();
+        let child_inode = abstract_inode
+            .create_child_inode("test", FileFlags::VALID, &mut mfs)
+            .unwrap();
+        assert!(child_inode
+            .modify_disk_inode(&tracker, |disk_inode| {
+                AbstractInode::to_byte_size(BLOCK_BYTE_SIZE as u64, disk_inode, &mut mfs)
+            })
+            .is_ok());
+        let mut read_buffer = [0u8; BLOCK_BYTE_SIZE as usize];
+        let mut write_buffer = [0u8; BLOCK_BYTE_SIZE as usize];
+        assert_eq!(read_buffer, write_buffer);
+        assert!(child_inode
+            .write_buffer(&write_buffer, 0, &mut mfs)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE));
+        assert!(child_inode
+            .read_buffer(&mut read_buffer, 0, &mut mfs)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE));
+        assert_eq!(read_buffer, write_buffer);
+        write_buffer[0] = 1u8;
+        assert!(child_inode
+            .write_buffer(&write_buffer, 0, &mut mfs)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE));
+        assert!(child_inode
+            .read_buffer(&mut read_buffer, 0, &mut mfs)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE));
+        assert_eq!(read_buffer, write_buffer);
+    }
+
+    #[test]
+    fn test_abstract_inode_read_and_write_child() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &tracker).unwrap();
+        let mut mfs = fs.lock();
+        let abstract_inode = mfs.root_abstract_inode();
+        let mut fentry = Fentry::empty();
+        let start_offset = Fentry::cal_start_offset(0, 0, 0);
+        assert!(abstract_inode
+            .read_child(&mut fentry, start_offset, &mut mfs)
+            .is_ok());
+        assert!(!fentry.is_valid());
+        assert_eq!(0, fentry.inode_bitmap_index);
+        assert_eq!(FileFlags::empty().bits(), fentry.flags.bits());
+        assert_eq!(0, fentry.next_hash_byte);
+        fentry = Fentry::new(1, FileFlags::VALID, 1);
+        assert!(abstract_inode
+            .write_child(&fentry, start_offset, &mut mfs)
+            .is_ok());
+        fentry = Fentry::empty();
+        assert!(abstract_inode
+            .read_child(&mut fentry, start_offset, &mut mfs)
+            .is_ok());
+        assert!(fentry.is_valid());
+        assert_eq!(1, fentry.inode_bitmap_index);
+        assert_eq!(FileFlags::VALID.bits(), fentry.flags.bits());
+        assert_eq!(1, fentry.next_hash_byte);
+    }
+
+    #[test]
+    fn test_inode_write_and_read() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let mock: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &tracker).unwrap();
+        let inode = fs.root_inode();
+        let child_inode = inode.create_child_inode("test", FileFlags::VALID).unwrap();
+        assert!(child_inode.to_byte_size(BLOCK_BYTE_SIZE as u64).is_ok());
+        let mut read_buffer = [0u8; BLOCK_BYTE_SIZE as usize];
+        let mut write_buffer = [0u8; BLOCK_BYTE_SIZE as usize];
+        assert_eq!(read_buffer, write_buffer);
+        assert!(child_inode
+            .write_buffer(&write_buffer, 0)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE));
+        assert!(child_inode
+            .read_buffer(&mut read_buffer, 0)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE));
+        assert_eq!(read_buffer, write_buffer);
+        assert_eq!(read_buffer.to_vec(), child_inode.read_all().unwrap());
+        write_buffer[0] = 1u8;
+        assert!(child_inode
+            .write_buffer(&write_buffer, 0)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE));
+        assert!(child_inode
+            .read_buffer(&mut read_buffer, 0)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE));
+        assert_eq!(read_buffer, write_buffer);
+        assert_eq!(read_buffer.to_vec(), child_inode.read_all().unwrap());
+
+        assert!(child_inode.to_byte_size(BLOCK_BYTE_SIZE as u64 * 2).is_ok());
+        let mut read_buffer = [0u8; BLOCK_BYTE_SIZE as usize * 2];
+        let mut write_buffer = [0u8; BLOCK_BYTE_SIZE as usize * 2];
+        assert_eq!(read_buffer, write_buffer);
+        assert!(child_inode
+            .write_buffer(&write_buffer, 0)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE * 2));
+        assert!(child_inode
+            .read_buffer(&mut read_buffer, 0)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE * 2));
+        assert_eq!(read_buffer, write_buffer);
+        assert_eq!(read_buffer.to_vec(), child_inode.read_all().unwrap());
+        write_buffer[0] = 1u8;
+        assert!(child_inode
+            .write_buffer(&write_buffer, 0)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE * 2));
+        assert!(child_inode
+            .read_buffer(&mut read_buffer, 0)
+            .is_ok_and(|size| size == BLOCK_BYTE_SIZE * 2));
+        assert_eq!(read_buffer, write_buffer);
+        assert_eq!(read_buffer.to_vec(), child_inode.read_all().unwrap());
+    }
+
+    #[test]
+    fn test_abstract_inode_init_as_dir() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let device: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(device).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(48), 1, &tracker).unwrap();
+        let mut mfs = fs.lock();
+        let abstract_inode = mfs.root_abstract_inode();
+        assert_eq!(
+            abstract_inode.inode_bitmap_index,
+            abstract_inode.self_inode(&mut mfs).inode_bitmap_index
+        );
+        assert_eq!(
+            abstract_inode.inode_bitmap_index,
+            abstract_inode.parent_inode(&mut mfs).inode_bitmap_index
+        );
+    }
+
+    #[test]
+    fn teset_abstract_inode_list_child_names() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let device: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(device).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(48), 1, &tracker).unwrap();
+        let mut mfs = fs.lock();
+        let abstract_inode = mfs.root_abstract_inode();
+        assert!(abstract_inode
+            .list_child_names(&mut mfs)
+            .is_ok_and(|names| names.is_empty()));
+        assert!(abstract_inode
+            .create_child_inode("test", FileFlags::VALID, &mut mfs)
+            .is_ok());
+        assert!(abstract_inode
+            .list_child_names(&mut mfs)
+            .is_ok_and(|names| !names.is_empty() && names[0] == "test"));
+        assert!(abstract_inode.remove_child_inode("test", &mut mfs).is_ok());
+        assert!(abstract_inode
+            .list_child_names(&mut mfs)
+            .is_ok_and(|names| names.is_empty()));
+    }
+
+    #[test]
+    fn test_abstract_inode_create_child_inode() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let device: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(device).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(48), 1, &tracker).unwrap();
+        let mut mfs = fs.lock();
+        let abstract_inode = mfs.root_abstract_inode();
+        let names = vec![
+            "forkexec",
+            "hello_world",
+            "usertests",
+            "sleep",
+            "forktest_simple",
+            "fantastic_text",
+            "initproc",
+            "usertests_simple",
+            "yield_out",
+            "forktest2",
+            "forktest",
+            "forktree",
+            "stack_overflow",
+            "sleep_simple",
+            "exit_test",
+            "matrix",
+            "core_shell",
+        ];
+        for name in names.iter() {
+            assert!(abstract_inode
+                .create_child_inode(name, FileFlags::VALID, &mut mfs)
+                .is_ok());
         }
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 4);
+        assert_eq!(
+            names.len(),
+            abstract_inode.list_child_names(&mut mfs).unwrap().len()
+        );
+    }
 
-        assert!(inode.get_child_inode("803", &mut mfs).unwrap().is_some());
-        assert!(inode.remove_child_inode("803", &mut mfs).is_ok());
-        assert!(inode.get_child_inode("803", &mut mfs).unwrap().is_none());
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 4);
+    #[test]
+    fn test_abstract_inode_create_and_get_child_inode() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let device: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(device).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(48), 1, &tracker).unwrap();
+        let mut mfs = fs.lock();
+        let abstract_inode = mfs.root_abstract_inode();
+        assert!(abstract_inode
+            .get_child_inode(SELF_FNAME_STR, &mut mfs)
+            .is_ok_and(|w| w.is_some_and(
+                |child| child.inode_bitmap_index == abstract_inode.inode_bitmap_index
+            )));
+        assert!(abstract_inode
+            .get_child_inode(PARENT_FNAME_STR, &mut mfs)
+            .is_ok_and(|w| w.is_some_and(
+                |child| child.inode_bitmap_index == abstract_inode.inode_bitmap_index
+            )));
+        assert!(abstract_inode
+            .get_child_inode("test", &mut mfs)
+            .is_ok_and(|w| w.is_none()));
+        assert!(abstract_inode
+            .create_child_inode(SELF_FNAME_STR, FileFlags::VALID, &mut mfs)
+            .is_err_and(|e| e.is_duplicatedfname()));
+        assert!(abstract_inode
+            .create_child_inode(PARENT_FNAME_STR, FileFlags::VALID, &mut mfs)
+            .is_err_and(|e| e.is_duplicatedfname()));
+        assert!(abstract_inode
+            .create_child_inode("test", FileFlags::VALID, &mut mfs)
+            .is_ok_and(|child| child.inode_bitmap_index != abstract_inode.inode_bitmap_index));
+        assert!(abstract_inode
+            .get_child_inode("test", &mut mfs)
+            .is_ok_and(|w| w.is_some_and(
+                |child| child.inode_bitmap_index != abstract_inode.inode_bitmap_index
+            )));
+        for i in 0..10 {
+            let name = &format!("test{}", i);
+            assert!(abstract_inode
+                .get_child_inode(name, &mut mfs)
+                .is_ok_and(|w| w.is_none()));
+            assert!(abstract_inode
+                .create_child_inode(name, FileFlags::VALID, &mut mfs)
+                .is_ok());
+            assert!(abstract_inode
+                .get_child_inode(name, &mut mfs)
+                .is_ok_and(|w| w.is_some()));
+        }
+    }
 
-        assert!(inode.get_child_inode("2167", &mut mfs).unwrap().is_some());
-        assert!(inode.remove_child_inode("2167", &mut mfs).is_ok());
-        assert!(inode.get_child_inode("2167", &mut mfs).unwrap().is_none());
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 4);
-
-        assert!(inode.get_child_inode("1764", &mut mfs).unwrap().is_some());
-        assert!(inode.remove_child_inode("1764", &mut mfs).is_ok());
-        assert!(inode.get_child_inode("1764", &mut mfs).unwrap().is_none());
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 4);
-
-        assert!(inode.get_child_inode("1500", &mut mfs).unwrap().is_some());
-        assert!(inode.remove_child_inode("1500", &mut mfs).is_ok());
-        assert!(inode.get_child_inode("1500", &mut mfs).unwrap().is_none());
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 3);
-
-        assert!(inode.get_child_inode("1084", &mut mfs).unwrap().is_some());
-        assert!(inode.remove_child_inode("1084", &mut mfs).is_ok());
-        assert!(inode.get_child_inode("1084", &mut mfs).unwrap().is_none());
-        assert_eq!(inode.leaf_block_count(&device).unwrap(), 1);
+    #[test]
+    fn test_abstract_inode_create_and_remove_child_inode() {
+        BLOCK_DEVICE_REGISTER.lock().reset().unwrap();
+        let device: Box<dyn BlockDevice> = Box::new(MemoryBlockDevice::new());
+        let tracker = BLOCK_DEVICE_REGISTER.lock().mount(device).unwrap();
+        let fs = FS::initialize(InitMode::TotalBlocks(48), 1, &tracker).unwrap();
+        let mut mfs = fs.lock();
+        let abstract_inode = mfs.root_abstract_inode();
+        for i in 0..10 {
+            let name = &format!("test{}", i);
+            assert!(abstract_inode
+                .get_child_inode(name, &mut mfs)
+                .is_ok_and(|w| w.is_none()));
+            assert!(abstract_inode
+                .create_child_inode(name, FileFlags::VALID, &mut mfs)
+                .is_ok());
+            assert!(abstract_inode
+                .get_child_inode(name, &mut mfs)
+                .is_ok_and(|w| w.is_some()));
+        }
+        assert!(abstract_inode
+            .leaf_block_count(&tracker)
+            .is_ok_and(|i| i == 2));
+        for i in 0..10 {
+            let name = &format!("test{}", i);
+            assert!(abstract_inode
+                .get_child_inode(name, &mut mfs)
+                .is_ok_and(|w| w.is_some()));
+            assert!(abstract_inode.remove_child_inode(name, &mut mfs).is_ok());
+            assert!(abstract_inode
+                .get_child_inode(name, &mut mfs)
+                .is_ok_and(|w| w.is_none()));
+            for j in (i + 1)..10 {
+                let name = &format!("test{}", j);
+                assert!(
+                    abstract_inode
+                        .get_child_inode(name, &mut mfs)
+                        .is_ok_and(|w| w.is_some()),
+                    "{} was deleted, {} must be exist",
+                    i,
+                    name
+                );
+            }
+        }
+        assert!(abstract_inode
+            .leaf_block_count(&tracker)
+            .is_ok_and(|i| i == 1));
     }
 }

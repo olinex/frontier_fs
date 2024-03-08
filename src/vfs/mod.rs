@@ -6,16 +6,16 @@ mod ffs;
 mod inode;
 
 // use other mods
-
-// use self mods
-
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+
+// use self mods
+use crate::block::BlockDeviceTracker;
+use crate::Result;
+
+// reexported
 pub use ffs::*;
 pub use inode::*;
-
-use crate::block::BlockDevice;
-use crate::Result;
 
 pub enum InitMode {
     TotalBlocks(u32),
@@ -24,6 +24,7 @@ pub enum InitMode {
 
 pub trait FileSystem {
     fn root_inode(&self) -> Inode;
-    fn initialize(mode: InitMode, iabc: u8, device: &Arc<dyn BlockDevice>) -> Result<Box<Self>>;
-    fn open(device: &Arc<dyn BlockDevice>) -> Result<Box<Self>>;
+    fn initialize(mode: InitMode, iabc: u8, tracker: &Arc<BlockDeviceTracker>)
+        -> Result<Box<Self>>;
+    fn open(tracker: &Arc<BlockDeviceTracker>) -> Result<Box<Self>>;
 }
