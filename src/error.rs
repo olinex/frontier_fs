@@ -72,6 +72,10 @@ pub enum FFSError {
     #[error("Can't delete non-empty directory `{0}` from directory {1}")]
     DeleteNonEmptyDirectory(String, u32),
 
+    #[groups(vfs)]
+    #[error("Inode {0} must be a directory")]
+    InodeMustBeDirectory(u32),
+
     #[groups(others, parse)]
     #[error("core error: {0}")]
     ParseUtf8Error(#[from] alloc::str::Utf8Error),

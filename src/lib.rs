@@ -1,6 +1,7 @@
 // @author:    olinex
 // @time:      2023/11/03
 #![cfg_attr(not(test), no_std)]
+#![feature(thin_box)]
 
 // self mods
 pub mod block;
@@ -13,9 +14,6 @@ pub mod vfs;
 #[cfg(test)]
 #[macro_use]
 extern crate std;
-
-// #[macro_use]
-// extern crate log;
 
 #[macro_use]
 extern crate bitflags;

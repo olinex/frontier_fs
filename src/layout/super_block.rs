@@ -44,7 +44,7 @@ use crate::configs::FS_MAGIC;
 ///     ** data area index:
 ///
 #[repr(C)]
-pub struct SuperBlock {
+pub(crate) struct SuperBlock {
     magic: u32,
     total_blocks: u32,
     inode_bitmap_blocks: u32,
@@ -55,7 +55,19 @@ pub struct SuperBlock {
     iabc: u8,
 }
 impl SuperBlock {
-    pub fn initialize(
+
+    /// Initializing a superblock, which does not have `new` function, 
+    /// is only stored or read directly by a pointer
+    /// 
+    /// # Arguments
+    /// * total_blocks: the number of blocks in the block device
+    /// * inode_bitmap_blocks: the number of the blocks which storing inode block bitmaps
+    /// * inode_area_blocks: the number of the blocks which storing inode
+    /// * data_bitmap_blocks: the number of the blocks which storing raw data block bitmaps
+    /// * data_area_blocks: the number of the blocks which storing raw data
+    /// * disk_inodes: the number of the disk inode allowed to be stored
+    /// * iabc: he average block count of disk inode
+    pub(crate) fn initialize(
         &mut self,
         total_blocks: u32,
         inode_bitmap_blocks: u32,
@@ -81,35 +93,32 @@ impl SuperBlock {
     }
 
     /// Check the validation of the super block data
-    pub fn is_valid(&self) -> bool {
+    pub(crate) fn is_valid(&self) -> bool {
         self.magic == FS_MAGIC
     }
 
-    pub fn total_blocks(&self) -> u32 {
-        self.total_blocks
-    }
-
-    pub fn inode_bitmap_blocks(&self) -> u32 {
+    #[inline(always)]
+    pub(crate) fn inode_bitmap_blocks(&self) -> u32 {
         self.inode_bitmap_blocks
     }
 
-    pub fn inode_area_blocks(&self) -> u32 {
+    #[inline(always)]
+    pub(crate) fn inode_area_blocks(&self) -> u32 {
         self.inode_area_blocks
     }
 
-    pub fn data_bitmap_blocks(&self) -> u32 {
+    #[inline(always)]
+    pub(crate) fn data_bitmap_blocks(&self) -> u32 {
         self.data_bitmap_blocks
     }
 
-    pub fn data_area_blocks(&self) -> u32 {
+    #[inline(always)]
+    pub(crate) fn data_area_blocks(&self) -> u32 {
         self.data_area_blocks
     }
 
-    pub fn disk_inodes(&self) -> u32 {
+    #[inline(always)]
+    pub(crate) fn disk_inodes(&self) -> u32 {
         self.disk_inodes
-    }
-
-    pub fn iabc(&self) -> u8 {
-        self.iabc
     }
 }

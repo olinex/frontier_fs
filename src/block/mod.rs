@@ -10,5 +10,5 @@ mod device;
 // use self mods
 
 // rexport
-pub use cache::*;
+pub(crate) use cache::*;
 pub use device::*;

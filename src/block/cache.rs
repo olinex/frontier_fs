@@ -5,6 +5,7 @@
 
 // use other mods
 use alloc::collections::BTreeMap;
+use alloc::boxed::ThinBox;
 use alloc::sync::Arc;
 use spin::mutex::Mutex;
 
@@ -16,9 +17,11 @@ use crate::{FFSError, Result};
 /// A cache object for data blocks,
 /// which manages the writing and reading of data blocks.
 /// Modified data in cache will be writed back to block device after the cache object is dropped.
-pub struct BlockCache {
+pub(crate) struct BlockCache {
     id: usize,
-    cache: [u8; BLOCK_BYTE_SIZE],
+    /// We should make the cache byte buffer to store into the kernel heap.
+    /// If we does't, the task's kernel stack maybe overflow 
+    cache: ThinBox<[u8; BLOCK_BYTE_SIZE]>,
     tracker: Arc<BlockDeviceTracker>,
     modified: bool,
 }
@@ -33,8 +36,8 @@ impl BlockCache {
     /// * Ok(BlockCache)
     /// * Err(RawDeviceError(error code))
     fn new(id: usize, tracker: Arc<BlockDeviceTracker>) -> Result<Self> {
-        let mut cache = [0u8; BLOCK_BYTE_SIZE];
-        if let Some(err_code) = tracker.read_block(id, &mut cache) {
+        let mut cache = ThinBox::new([0u8; BLOCK_BYTE_SIZE]);
+        if let Some(err_code) = tracker.read_block(id, &mut *cache) {
             Err(FFSError::RawDeviceError(err_code))
         } else {
             Ok(Self {
@@ -53,6 +56,7 @@ impl BlockCache {
     ///
     /// # Returns
     /// * usize: the pointer addres
+    #[inline(always)]
     fn addr_of_offset(&self, offset: usize) -> usize {
         &self.cache[offset] as *const _ as usize
     }
@@ -64,6 +68,7 @@ impl BlockCache {
     ///
     /// # Returns
     /// * ref T
+    #[inline(always)]
     fn get_ref<T>(&self, offset: usize) -> &T
     where
         T: Sized,
@@ -79,6 +84,7 @@ impl BlockCache {
     ///
     /// # Returns
     /// * mutable ref T
+    #[inline(always)]
     fn get_mut<T>(&mut self, offset: usize) -> &mut T
     where
         T: Sized,
@@ -97,7 +103,8 @@ impl BlockCache {
     /// # Returns
     /// * Ok(the result of the closure)
     /// * Err(DataOutOfBounds)
-    pub fn read<T, V>(&self, offset: usize, f: impl FnOnce(&T) -> V) -> Result<V> {
+    #[inline(always)]
+    pub(crate) fn read<T, V>(&self, offset: usize, f: impl FnOnce(&T) -> V) -> Result<V> {
         if (offset + core::mem::size_of::<T>()) <= BLOCK_BYTE_SIZE {
             Ok(f(self.get_ref(offset)))
         } else {
@@ -114,7 +121,8 @@ impl BlockCache {
     /// # Returns
     /// * Ok(the result of the closure)
     /// * Err(DataOutOfBounds)
-    pub fn modify<T, V>(&mut self, offset: usize, f: impl FnOnce(&mut T) -> V) -> Result<V> {
+    #[inline(always)]
+    pub(crate) fn modify<T, V>(&mut self, offset: usize, f: impl FnOnce(&mut T) -> V) -> Result<V> {
         if (offset + core::mem::size_of::<T>()) <= BLOCK_BYTE_SIZE {
             self.modified = true;
             Ok(f(self.get_mut(offset)))
@@ -128,9 +136,9 @@ impl BlockCache {
     /// # Returns
     /// * Ok(())
     /// * Err(RawDeviceError(error code))
-    pub fn sync(&mut self) -> Result<()> {
+    pub(crate) fn sync(&mut self) -> Result<()> {
         if self.modified {
-            if let Some(err_code) = self.tracker.write_block(self.id, &self.cache) {
+            if let Some(err_code) = self.tracker.write_block(self.id, &*self.cache) {
                 return Err(FFSError::RawDeviceError(err_code));
             }
             self.modified = false;
@@ -145,7 +153,7 @@ impl Drop for BlockCache {
 }
 
 /// The manager of the block cache
-pub struct BlockCacheManager {
+pub(crate) struct BlockCacheManager {
     /// the block caches mapping which key are the block ids
     map: BTreeMap<(usize, usize), Arc<Mutex<BlockCache>>>,
 }
@@ -219,7 +227,7 @@ impl BlockCacheManager {
     /// # Returns
     /// * Ok(Arc<Mutex<BlockDevice>>)
     /// * Err(NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn get(
+    pub(crate) fn get(
         &mut self,
         tracker: &Arc<BlockDeviceTracker>,
         block_id: usize,
@@ -234,7 +242,7 @@ impl BlockCacheManager {
 
     /// Clear all caches in the cache manager.
     /// Modified cache will be saved when dropping.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         while self.map.len() != 0 {
             if let Some(id) = self.find_droptable_id() {
                 let cache = Arc::clone(self.map.get(&id).unwrap());
@@ -249,7 +257,7 @@ impl BlockCacheManager {
 }
 
 lazy_static! {
-    pub static ref BLOCK_CACHE_MANAGER: Arc<Mutex<BlockCacheManager>> =
+    pub(crate) static ref BLOCK_CACHE_MANAGER: Arc<Mutex<BlockCacheManager>> =
         Arc::new(Mutex::new(BlockCacheManager::new()));
 }
 

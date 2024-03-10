@@ -4,7 +4,6 @@
 // self mods
 
 // use other mods
-
 use alloc::sync::Arc;
 
 // use self mods
@@ -17,11 +16,14 @@ const BITMAP_UNIT_BYTE_SIZE: usize = core::mem::size_of::<usize>();
 const BITMAP_UNIT_BIT_SIZE: usize = BITMAP_UNIT_BYTE_SIZE * 8;
 const BITMAP_UNIT_COUNT: usize = BLOCK_BYTE_SIZE / BITMAP_UNIT_BYTE_SIZE;
 
+/// One type of block which store the bitmap
+pub(crate) type BitmapBlock = [usize; BITMAP_UNIT_COUNT];
+
 /// The bitmap data structure used to control the file system resources.
 /// Bitmaps are stored in multiple data blocks,
 /// and we can't manipulate a bit directly in the program,
 /// so we need to operate uniformly in the area where the bit is located as a 32-bit positive integer.
-pub struct Bitmap {
+pub(crate) struct Bitmap {
     /// The start block id which will be used for storing the bitmap data.
     start_block_id: usize,
     /// The count of the blocks used to store the bitmap data
@@ -61,7 +63,7 @@ impl Bitmap {
     /// * start_block_id: the block id which will be used for storing the bitmap data.
     /// * blocks: the count of the blocks used to store the bitmap data.
     /// * usable_bits: The count of the usable bits in the bitmap
-    pub fn new(start_block_id: usize, blocks: usize, usable_bits: usize) -> Self {
+    pub(crate) fn new(start_block_id: usize, blocks: usize, usable_bits: usize) -> Self {
         Self {
             start_block_id,
             blocks,
@@ -78,7 +80,7 @@ impl Bitmap {
     /// # Returns
     /// * Ok(bitmap index)
     /// * Err(BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn alloc(&self, tracker: &Arc<BlockDeviceTracker>) -> Result<usize> {
+    pub(crate) fn alloc(&self, tracker: &Arc<BlockDeviceTracker>) -> Result<usize> {
         let mut manager = BLOCK_CACHE_MANAGER.lock();
         for block_index in 0..self.blocks {
             let once = |block: &mut BitmapBlock| {
@@ -123,7 +125,7 @@ impl Bitmap {
     /// # Returns
     /// * Ok(())
     /// * Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn dealloc(&self, tracker: &Arc<BlockDeviceTracker>, bitmap_index: usize) -> Result<()> {
+    pub(crate) fn dealloc(&self, tracker: &Arc<BlockDeviceTracker>, bitmap_index: usize) -> Result<()> {
         let (block_index, unit_index, bit_offset) = Self::decompress(bitmap_index);
         let once = |value: &mut usize| {
             let bit_value = 1 << bit_offset;
@@ -141,8 +143,6 @@ impl Bitmap {
             .modify(unit_index * BITMAP_UNIT_BYTE_SIZE, once)?
     }
 }
-
-pub type BitmapBlock = [usize; BITMAP_UNIT_COUNT];
 
 #[cfg(test)]
 mod tests {

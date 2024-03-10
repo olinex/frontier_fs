@@ -63,7 +63,7 @@ impl BlockDeviceTracker {
     }
 
     /// Get the unique device number
-    pub fn device_id(&self) -> usize {
+    pub(crate) fn device_id(&self) -> usize {
         self.device_id
     }
 }
@@ -75,7 +75,7 @@ impl Deref for BlockDeviceTracker {
 }
 
 /// The block device register, which contains all the block and its tracker.
-/// It is given a device number, and each device number is used only once throughout the life of the operating system
+/// It is given a device number, and each device number is used only once throughout the life of the register
 pub struct BlockDeviceRegister {
     /// the device id will be given to the block device tracker on the next time
     next_id: usize,

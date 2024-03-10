@@ -11,6 +11,6 @@ mod super_block;
 // use self mods
 
 // reexport
-pub use bitmap::*;
-pub use disk_inode::*;
-pub use super_block::*;
+pub(crate) use bitmap::*;
+pub(crate) use disk_inode::*;
+pub(crate) use super_block::*;

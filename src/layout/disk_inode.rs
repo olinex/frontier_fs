@@ -35,9 +35,8 @@ const MAX_INODE_BYTE_SIZE: u64 = BLOCK_BYTE_SIZE as u64
     * (TOTAL_I1_LEAF_BLOCK_COUNT + TOTAL_I2_LEAF_BLOCK_COUNT + TOTAL_I3_LEAF_BLOCK_COUNT) as u64;
 
 type IndirectBlock = [u32; BLOCK_STORE_UNIT_COUNT];
-pub type DataBlock = [u8; BLOCK_BYTE_SIZE];
+pub(crate) type DataBlock = [u8; BLOCK_BYTE_SIZE];
 
-///
 enum HopLevel {
     Direct(usize),
     Indirect1(usize, usize),
@@ -121,7 +120,7 @@ impl HopLevel {
 ///
 #[repr(C)]
 #[derive(Clone)]
-pub struct DiskInode {
+pub(crate) struct DiskInode {
     /// The byte size of the file raw data.
     /// This size is always little smaller than the size which file was allocated,
     /// because the application for the occupation of file is always done in blocks.
@@ -237,7 +236,7 @@ impl DiskInode {
     }
 
     /// Get the byte size of the raw data in th disk inode
-    pub fn data_byte_size(&self) -> u64 {
+    pub(crate) fn data_byte_size(&self) -> u64 {
         self.data_byte_size
     }
 
@@ -249,7 +248,7 @@ impl DiskInode {
     /// # Returns
     /// * Ok(more blocks count)
     /// * Err(DataOutOfBounds)
-    pub fn blocks_needed(&self, new_byte_size: u64) -> Result<u32> {
+    pub(crate) fn blocks_needed(&self, new_byte_size: u64) -> Result<u32> {
         if self.data_byte_size < new_byte_size {
             Ok(Self::cal_total_block_count(new_byte_size)? - self.total_block_count())
         } else {
@@ -259,12 +258,12 @@ impl DiskInode {
 
     /// Get the number of the total leaf block in the disk inode.
     /// The raw data was stored in the leaf blocks.
-    pub fn leaf_block_count(&self) -> u32 {
+    pub(crate) fn leaf_block_count(&self) -> u32 {
         Self::cal_leaf_block_count(self.data_byte_size).unwrap()
     }
 
     /// Get the number of the total blocks in the disk inode, including leaf blocks and branch blocks.
-    pub fn total_block_count(&self) -> u32 {
+    pub(crate) fn total_block_count(&self) -> u32 {
         Self::cal_total_block_count(self.data_byte_size).unwrap()
     }
 
@@ -278,7 +277,7 @@ impl DiskInode {
     /// # Returns
     /// * Ok(())
     /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn new(tracker: &Arc<BlockDeviceTracker>, block_id: u32, offset: usize) -> Result<()> {
+    pub(crate) fn new(tracker: &Arc<BlockDeviceTracker>, block_id: u32, offset: usize) -> Result<()> {
         BLOCK_CACHE_MANAGER
             .lock()
             .get(tracker, block_id as usize)?
@@ -298,7 +297,8 @@ impl DiskInode {
     /// # Returns
     /// * Ok(Self)
     /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn get(tracker: &Arc<BlockDeviceTracker>, block_id: u32, offset: usize) -> Result<Self> {
+    #[cfg(test)]
+    pub(crate) fn get(tracker: &Arc<BlockDeviceTracker>, block_id: u32, offset: usize) -> Result<Self> {
         BLOCK_CACHE_MANAGER
             .lock()
             .get(tracker, block_id as usize)?
@@ -307,7 +307,7 @@ impl DiskInode {
     }
 
     /// Initially make the disk inode empty, be careful all the blocks are not dealloced yet.
-    pub fn initialize(&mut self) {
+    pub(crate) fn initialize(&mut self) {
         self.data_byte_size = 0;
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1.iter_mut().for_each(|v| *v = 0);
@@ -415,7 +415,7 @@ impl DiskInode {
     /// # Returns
     /// * Ok(block id)
     /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn get_block_id(&self, tracker: &Arc<BlockDeviceTracker>, leaf_index: u32) -> Result<u32> {
+    pub(crate) fn get_block_id(&self, tracker: &Arc<BlockDeviceTracker>, leaf_index: u32) -> Result<u32> {
         if leaf_index >= self.leaf_block_count() {
             return Err(FFSError::DataOutOfBounds);
         }
@@ -520,7 +520,7 @@ impl DiskInode {
     /// # Returns
     /// * Ok(Vec<block ids>)
     /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn clear_byte_size(&mut self, tracker: &Arc<BlockDeviceTracker>) -> Result<Vec<u32>> {
+    pub(crate) fn clear_byte_size(&mut self, tracker: &Arc<BlockDeviceTracker>) -> Result<Vec<u32>> {
         let block_ids = self.collect_block_ids(
             tracker,
             0,
@@ -541,7 +541,7 @@ impl DiskInode {
     /// # Returns
     /// * Ok(Vec<unused leaf blocks and branch blocks>)
     /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn decrease_to_byte_size(
+    pub(crate) fn decrease_to_byte_size(
         &mut self,
         tracker: &Arc<BlockDeviceTracker>,
         new_byte_size: u64,
@@ -582,7 +582,7 @@ impl DiskInode {
     /// # Returns
     /// * Ok(())
     /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn increase_to_byte_size(
+    pub(crate) fn increase_to_byte_size(
         &mut self,
         tracker: &Arc<BlockDeviceTracker>,
         new_byte_size: u64,
@@ -703,7 +703,7 @@ impl DiskInode {
     /// * Returns:
     /// * Ok(the byte size of the data which have been readed from block device and written to the buffer)
     /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn read_at(
+    pub(crate) fn read_at(
         &self,
         tracker: &Arc<BlockDeviceTracker>,
         start_offset: u64,
@@ -759,7 +759,7 @@ impl DiskInode {
     /// * Returns:
     /// * Ok(the byte size of the data which have been writed to block device cache)
     /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn write_at(
+    pub(crate) fn write_at(
         &mut self,
         tracker: &Arc<BlockDeviceTracker>,
         start_offset: u64,

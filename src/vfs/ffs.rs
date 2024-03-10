@@ -20,6 +20,7 @@ const INODE_BITMAP_START_BLOCK_ID: u32 = 1;
 const DISK_INODE_BYTE_SIZE: usize = core::mem::size_of::<DiskInode>();
 const PER_BLOCK_DISK_INODE_COUNT: usize = BLOCK_BYTE_SIZE / DISK_INODE_BYTE_SIZE;
 
+/// The main struct of the file system
 pub struct FrontierFileSystem {
     tracker: Arc<BlockDeviceTracker>,
     inode_bitmap: Bitmap,
@@ -232,7 +233,7 @@ impl FrontierFileSystem {
     ///     u32: the block id of the disk inode,
     ///     usize: the offset of the disk inode in the block
     /// )
-    pub fn cal_disk_inode_position(&self, inode_bitmap_index: u32) -> (u32, usize) {
+    pub(crate) fn cal_disk_inode_position(&self, inode_bitmap_index: u32) -> (u32, usize) {
         (
             self.inode_area_start_block_id
                 + (inode_bitmap_index / PER_BLOCK_DISK_INODE_COUNT as u32),
@@ -245,7 +246,7 @@ impl FrontierFileSystem {
     /// # Returns
     /// * Ok(inode bitmap index)
     /// * Err(BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn alloc_inode_bitmap_index(&mut self) -> Result<u32> {
+    pub(crate) fn alloc_inode_bitmap_index(&mut self) -> Result<u32> {
         Ok(self.inode_bitmap.alloc(&self.tracker)? as u32)
     }
 
@@ -257,7 +258,7 @@ impl FrontierFileSystem {
     /// # Returns
     /// * Ok(())
     /// * Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn dealloc_inode_bitmap_index(&mut self, inode_bitmap_index: u32) -> Result<()> {
+    pub(crate) fn dealloc_inode_bitmap_index(&mut self, inode_bitmap_index: u32) -> Result<()> {
         self.inode_bitmap
             .dealloc(&self.tracker, inode_bitmap_index as usize)
     }
@@ -266,7 +267,7 @@ impl FrontierFileSystem {
     ///
     /// # Returns
     /// * Err(DataOutOfBounds | BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn alloc_data_block_id(&mut self) -> Result<u32> {
+    pub(crate) fn alloc_data_block_id(&mut self) -> Result<u32> {
         let data_block_id =
             self.data_bitmap.alloc(&self.tracker)? as u32 + self.data_area_start_block_id;
         let mut manager = BLOCK_CACHE_MANAGER.lock();
@@ -299,7 +300,7 @@ impl FrontierFileSystem {
     /// # Returns
     /// * Ok(Vec<block id>)
     /// * Err(DataOutOfBounds | BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn bulk_alloc_data_block_ids(&mut self, blocks_needed: u32) -> Result<Vec<u32>> {
+    pub(crate) fn bulk_alloc_data_block_ids(&mut self, blocks_needed: u32) -> Result<Vec<u32>> {
         let mut data_block_ids = Vec::new();
         for _ in 0..blocks_needed {
             match self.alloc_data_block_id() {
@@ -322,7 +323,7 @@ impl FrontierFileSystem {
     /// # Returns
     /// * Ok(())
     /// * Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn dealloc_data_block_id(&mut self, data_block_id: u32) -> Result<()> {
+    pub(crate) fn dealloc_data_block_id(&mut self, data_block_id: u32) -> Result<()> {
         self.data_bitmap.dealloc(
             &self.tracker,
             (data_block_id - self.data_area_start_block_id) as usize,
@@ -337,7 +338,7 @@ impl FrontierFileSystem {
     /// # Returns
     /// * Ok(())
     /// * Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub fn bulk_dealloc_data_block_ids(&mut self, data_block_ids: Vec<u32>) -> Result<()> {
+    pub(crate) fn bulk_dealloc_data_block_ids(&mut self, data_block_ids: Vec<u32>) -> Result<()> {
         for block_id in data_block_ids {
             self.dealloc_data_block_id(block_id)?
         }
@@ -384,22 +385,12 @@ impl FrontierFileSystem {
     }
 
     /// Get the unique id of the device
-    pub fn tracker(&self) -> &Arc<BlockDeviceTracker> {
+    pub(crate) fn tracker(&self) -> &Arc<BlockDeviceTracker> {
         &self.tracker
     }
 
-    /// Get the start block id of the inode area
-    pub fn inode_area_start_block_id(&self) -> u32 {
-        self.inode_area_start_block_id
-    }
-
-    /// Get the start block id of the data area
-    pub fn data_area_start_block_id(&self) -> u32 {
-        self.data_area_start_block_id
-    }
-
     /// Get the root inode in the file system.
-    pub fn root_abstract_inode(&self) -> AbstractInode {
+    pub(crate) fn root_abstract_inode(&self) -> AbstractInode {
         let (disk_inode_block_id, disk_inode_block_offset) = self.cal_disk_inode_position(0);
         AbstractInode::new(
             0,
@@ -666,22 +657,22 @@ mod tests {
         assert!(FS::initialize(InitMode::TotalBlocks(5), 1, &tracker).is_ok());
         assert!(FS::open(&tracker).is_ok_and(|ffs| {
             let ffs = ffs.lock();
-            assert_eq!(2, ffs.inode_area_start_block_id());
-            assert_eq!(4, ffs.data_area_start_block_id());
+            assert_eq!(2, ffs.inode_area_start_block_id);
+            assert_eq!(4, ffs.data_area_start_block_id);
             true
         }));
         assert!(FS::initialize(InitMode::TotalBlocks(5), 2, &tracker).is_ok());
         assert!(FS::open(&tracker).is_ok_and(|ffs| {
             let ffs = ffs.lock();
-            assert_eq!(2, ffs.inode_area_start_block_id());
-            assert_eq!(4, ffs.data_area_start_block_id());
+            assert_eq!(2, ffs.inode_area_start_block_id);
+            assert_eq!(4, ffs.data_area_start_block_id);
             true
         }));
         assert!(FS::initialize(InitMode::TotalBlocks(6), 2, &tracker).is_ok());
         assert!(FS::open(&tracker).is_ok_and(|ffs| {
             let ffs = ffs.lock();
-            assert_eq!(2, ffs.inode_area_start_block_id());
-            assert_eq!(4, ffs.data_area_start_block_id());
+            assert_eq!(2, ffs.inode_area_start_block_id);
+            assert_eq!(4, ffs.data_area_start_block_id);
             true
         }));
         assert!(FS::initialize(
@@ -692,8 +683,8 @@ mod tests {
         .is_ok());
         assert!(FS::open(&tracker).is_ok_and(|ffs| {
             let ffs = ffs.lock();
-            assert_eq!(2, ffs.inode_area_start_block_id());
-            assert_eq!(4, ffs.data_area_start_block_id());
+            assert_eq!(2, ffs.inode_area_start_block_id);
+            assert_eq!(4, ffs.data_area_start_block_id);
             true
         }));
         assert!(FS::initialize(
@@ -704,8 +695,8 @@ mod tests {
         .is_ok());
         assert!(FS::open(&tracker).is_ok_and(|ffs| {
             let ffs = ffs.lock();
-            assert_eq!(2, ffs.inode_area_start_block_id());
-            assert_eq!(4, ffs.data_area_start_block_id());
+            assert_eq!(2, ffs.inode_area_start_block_id);
+            assert_eq!(4, ffs.data_area_start_block_id);
             true
         }));
         assert!(FS::initialize(
@@ -716,8 +707,8 @@ mod tests {
         .is_ok());
         assert!(FS::open(&tracker).is_ok_and(|ffs| {
             let ffs = ffs.lock();
-            assert_eq!(2, ffs.inode_area_start_block_id());
-            assert_eq!(4, ffs.data_area_start_block_id());
+            assert_eq!(2, ffs.inode_area_start_block_id);
+            assert_eq!(4, ffs.data_area_start_block_id);
             true
         }));
         assert!(FS::initialize(
@@ -728,8 +719,8 @@ mod tests {
         .is_ok());
         assert!(FS::open(&tracker).is_ok_and(|ffs| {
             let ffs = ffs.lock();
-            assert_eq!(2, ffs.inode_area_start_block_id());
-            assert_eq!(5, ffs.data_area_start_block_id());
+            assert_eq!(2, ffs.inode_area_start_block_id);
+            assert_eq!(5, ffs.data_area_start_block_id);
             true
         }));
     }
