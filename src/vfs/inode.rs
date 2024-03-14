@@ -37,25 +37,49 @@ bitflags! {
     /// Flags that indicate file's meta infos, including file types/permissions
     #[derive(Clone, Copy)]
     pub struct FileFlags: u32 {
-        const VALID = 1 << 31;
-        const DIR = 1 << 30;
+        // permission
+        const EXECUTABLE = 1 << 0;
+        const READABLE = 1 << 1;
+        const WRITABLE = 1 << 2;
+
+        // type
         const HARD_LINK = 1 << 29;
+        const DIRECTORY = 1 << 30;
+        const VALID = 1 << 31;
+
+        /// shortcut
+        const X = Self::VALID.bits() | Self::READABLE.bits();
+        const R = Self::VALID.bits() | Self::READABLE.bits();
+        const W = Self::VALID.bits() | Self::WRITABLE.bits();
+        const RW = Self::R.bits() | Self::W.bits();
+        const RWX = Self::RW.bits() | Self::VALID.bits();
+        const RDIR = Self::R.bits() | Self::DIRECTORY.bits();
+        const RWDIR = Self::RW.bits() | Self::DIRECTORY.bits();
     }
 }
 impl FileFlags {
-    /// Check if the file is valid
+    pub fn is_executable(&self) -> bool {
+        self.contains(FileFlags::EXECUTABLE)
+    }
+
+    pub fn is_readable(&self) -> bool {
+        self.contains(FileFlags::READABLE)
+    }
+
+    pub fn is_writable(&self) -> bool {
+        self.contains(FileFlags::WRITABLE)
+    }
+
+    pub fn is_hard_link(&self) -> bool {
+        self.contains(FileFlags::HARD_LINK)
+    }
+
+    pub fn is_directory(&self) -> bool {
+        self.contains(FileFlags::DIRECTORY)
+    }
+
     pub(crate) fn is_valid(&self) -> bool {
         self.contains(FileFlags::VALID)
-    }
-
-    /// Check if the file is directory
-    pub(crate) fn is_dir(&self) -> bool {
-        self.contains(FileFlags::DIR)
-    }
-
-    /// Check if the file is a hard link
-    pub(crate) fn is_hard_link(&self) -> bool {
-        self.contains(FileFlags::HARD_LINK)
     }
 }
 
@@ -243,7 +267,7 @@ impl Fentry {
 
     /// Check if the file is directory
     fn is_dir(&self) -> bool {
-        self.flags.is_dir()
+        self.flags.is_directory()
     }
 
     /// Check if the file entry is valid
@@ -429,12 +453,21 @@ impl AbstractInode {
     /// Check if current inode is directory
     #[inline(always)]
     fn must_be_dir(&self) -> Result<()> {
-        if !self.flags.is_dir() {
+        if !self.flags.is_directory() {
             Err(FFSError::InodeMustBeDirectory(self.inode_bitmap_index))
         } else {
             Ok(())
         }
+    }
 
+    /// Check if current inode is file
+    #[inline(always)]
+    fn must_be_file(&self) -> Result<()> {
+        if self.flags.is_directory() {
+            Err(FFSError::InodeMustBeFile(self.inode_bitmap_index))
+        } else {
+            Ok(())
+        }
     }
 
     /// Convert file entry to abstract inode
@@ -705,9 +738,7 @@ impl AbstractInode {
     /// * Ok(if is empty)
     /// * Err(DataOutOfBounds | InodeMustBeDirectory(bitmap index) | NoDroptableBlockCache | RawDeviceError(error code))
     pub(crate) fn dir_is_empty(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<bool> {
-        if !self.flags.is_dir() {
-            return Err(FFSError::InodeMustBeDirectory(self.inode_bitmap_index));
-        }
+        self.must_be_dir()?;
         let mut iterator = self.to_entry_iter(fs)?;
         loop {
             let name = iterator.fname.to_str();
@@ -728,8 +759,10 @@ impl AbstractInode {
     /// # Returns
     /// Ok(Vec<String>)
     /// Err(DataOutOfBounds | InodeMustBeDirectory(bitmap index) | NoDroptableBlockCache | RawDeviceError(error code))
-    pub(crate) fn list_child_names(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<Vec<String>> {
-        self.must_be_dir()?;
+    pub(crate) fn list_child_names(
+        &self,
+        fs: &mut MutexGuard<FrontierFileSystem>,
+    ) -> Result<Vec<String>> {
         let mut iterator = self.to_entry_iter(fs)?;
         let mut names = Vec::new();
         loop {
@@ -759,7 +792,6 @@ impl AbstractInode {
         name: &str,
         fs: &mut MutexGuard<FrontierFileSystem>,
     ) -> Result<Option<Self>> {
-        self.must_be_dir()?;
         let hash = Fname::cal_name_hash(name);
         let mut hash_byte = hash[0];
         let mut leaf_index = 0;
@@ -820,7 +852,6 @@ impl AbstractInode {
         flags: FileFlags,
         fs: &mut MutexGuard<FrontierFileSystem>,
     ) -> Result<Self> {
-        self.must_be_dir()?;
         let hash = Fname::cal_name_hash(name);
         let mut hash_byte = hash[0];
         let mut next_hash_byte = hash[1];
@@ -875,12 +906,8 @@ impl AbstractInode {
         let start_offset = Fname::cal_start_offset(leaf_index, end_hash_index, end_item_index);
         self.write_child(&fname, start_offset, fs)?;
         let child_inode = Self::convert_to_inode(&fentry, fs);
-        if flags.is_dir() {
-            child_inode.init_as_dir(
-                self.inode_bitmap_index,
-                self.flags,
-                fs
-            )?;
+        if flags.is_directory() {
+            child_inode.init_as_dir(self.inode_bitmap_index, self.flags, fs)?;
         }
         Ok(child_inode)
     }
@@ -907,7 +934,6 @@ impl AbstractInode {
         name: &str,
         fs: &mut MutexGuard<FrontierFileSystem>,
     ) -> Result<()> {
-        self.must_be_dir()?;
         if name == SELF_FNAME_STR || name == PARENT_FNAME_STR {
             return Err(FFSError::FnameDoesNotExist(
                 name.to_string(),
@@ -1271,12 +1297,17 @@ pub struct Inode {
 }
 impl Inode {
     /// Create a new inode
-    /// 
+    ///
     /// # Arguments
     /// * inner: abstract inode instance
     /// * fs: the mutable frontier file system
     pub(crate) fn new(inner: AbstractInode, fs: Arc<Mutex<FrontierFileSystem>>) -> Self {
         Inode { inner, fs }
+    }
+
+    /// Get the file flags
+    pub fn flags(&self) -> FileFlags {
+        self.inner.flags
     }
 
     /// Get the index of the inode in bitmap
@@ -1286,16 +1317,20 @@ impl Inode {
 
     /// Read data from block device and write bytes back into buffer.
     /// This function reads a sufficient amount of data from the block device based on the length of the incoming slice,
-    /// However, when the data in the device is not enough to fill the entire slice, 
+    /// However, when the data in the device is not enough to fill the entire slice,
     /// you need to make your own judgment based on the length of the read bytes returned.
-    /// 
+    ///
     /// # Arguments
     /// * buffer: the mutable buffer which will be writed
     /// * start_offset: the offset where the data starts to be read
-    /// 
+    ///
     /// # Returns
     /// * Ok(read bytes length)
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// * Err(
+    ///     DataOutOfBounds |
+    ///     NoDroptableBlockCache |
+    ///     RawDeviceError(error code)
+    /// )
     pub fn read_buffer(&self, buffer: &mut [u8], start_offset: u64) -> Result<usize> {
         let mut fs = self.fs.lock();
         self.inner.read_buffer(buffer, start_offset, &mut fs)
@@ -1303,32 +1338,41 @@ impl Inode {
 
     /// Write data to block device according to the buffer.
     /// This function reads a sufficient amount of data from the buffer.
-    /// When the block device is not enough space to fill, 
+    /// When the block device is not enough space to fill,
     /// you need to make your own judgment based on the length of the write bytes returned.
-    /// 
+    ///
     /// # Arguments
     /// * buffer: the inmmutable buffer which will be read
     /// * start_offset: the offset where the data starts to be writed
-    /// 
+    ///
     /// # Returns
     /// * Ok(write bytes length)
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// * Err(
+    ///     DataOutOfBounds |
+    ///     NoDroptableBlockCache |
+    ///     RawDeviceError(error code)
+    /// )
     pub fn write_buffer(&self, buffer: &[u8], start_offset: u64) -> Result<usize> {
         let mut fs = self.fs.lock();
         self.inner.write_buffer(buffer, start_offset, &mut fs)
     }
 
     /// Read all bytes from the block device an return the bytes vector.
-    /// 
+    ///
     /// # Returns
     /// * Ok(Vec<bytes>)
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// * Err(
+    ///     DataOutOfBounds | 
+    ///     NoDroptableBlockCache | 
+    ///     RawDeviceError(error code)
+    /// )
     pub fn read_all(&self) -> Result<Vec<u8>> {
+        let mut fs = self.fs.lock();
         let mut result = Vec::new();
         let mut buffer = [0u8; 512];
         let mut start_offset = 0;
         loop {
-            let read_size = self.read_buffer(&mut buffer, start_offset)?;
+            let read_size = self.inner.read_buffer(&mut buffer, start_offset, &mut fs)?;
             if read_size == 0 {
                 break;
             }
@@ -1339,12 +1383,18 @@ impl Inode {
     }
 
     /// List all the name of the child inodes
-    /// 
+    ///
     /// # Returns
     /// * Ok(Vec<Strings>)
-    /// * Err(DataOutOfBounds | InodeMustBeDirectory(bitmap index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// * Err(
+    ///     InodeMustBeDirectory(bitmap index) | 
+    ///     DataOutOfBounds | 
+    ///     NoDroptableBlockCache | 
+    ///     RawDeviceError(error code)
+    /// )
     pub fn list_child_names(&self) -> Result<Vec<String>> {
         let mut fs = self.fs.lock();
+        self.inner.must_be_dir()?;
         self.inner.list_child_names(&mut fs)
     }
 
@@ -1352,15 +1402,21 @@ impl Inode {
     /// note that this adjustment will not be adjusted exactly according to the number of bytes,
     /// because we can only adjust it based on integer multiples of the number of bytes in the block.
     /// As a result, the adjusted inode will generally be larger than the specified number of bytes.
-    /// 
+    ///
     /// # Arguments
     /// * new_byte_size: the new byte size of the inode
-    /// 
+    ///
     /// # Returns
-    /// * Ok(()) 
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// * Ok(())
+    /// * Err(
+    ///     InodeMustBeFile(bitmap index) | 
+    ///     DataOutOfBounds | 
+    ///     NoDroptableBlockCache | 
+    ///     RawDeviceError(error code)
+    /// )
     pub fn to_byte_size(&self, new_byte_size: u64) -> Result<()> {
         let mut fs = self.fs.lock();
+        self.inner.must_be_file()?;
         let tracker = Arc::clone(fs.tracker());
         self.inner.modify_disk_inode(&tracker, |disk_inode| {
             AbstractInode::to_byte_size(new_byte_size, disk_inode, &mut fs)
@@ -1368,16 +1424,22 @@ impl Inode {
     }
 
     /// Get child inode from the current directory inode according to the name incoming.
-    /// 
+    ///
     /// # Arguments
     /// * name: the name string of the child inode
-    /// 
+    ///
     /// # Returns
     /// * Ok(Some(chld inode))
     /// * Ok(None)
-    /// * Err(DataOutOfBounds | InodeMustBeDirectory(bitmap index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// * Err(
+    ///     InodeMustBeDirectory(bitmap index) | 
+    ///     DataOutOfBounds | 
+    ///     NoDroptableBlockCache | 
+    ///     RawDeviceError(error code)
+    /// )
     pub fn get_child_inode(&self, name: &str) -> Result<Option<Self>> {
         let mut fs = self.fs.lock();
+        self.inner.must_be_dir()?;
         if let Some(abs_inode) = self.inner.get_child_inode(name, &mut fs)? {
             Ok(Some(Self::new(abs_inode, Arc::clone(&self.fs))))
         } else {
@@ -1386,16 +1448,17 @@ impl Inode {
     }
 
     /// Create a new child inode according to the name and flags arguments incomming.
-    /// 
+    ///
     /// # Arguments
     /// * name: the name of the new child inode
     /// * flags: the file flags of the new child inode
-    /// 
+    ///
     /// # Returns
     /// * Ok(child inode)
     /// * Err(
-    ///     DuplicatedFname(name, inode bitmap index) |
+    ///     InodeMustBeWritable(bitmap index) |
     ///     InodeMustBeDirectory(bitmap index) |
+    ///     DuplicatedFname(name, inode bitmap index) |
     ///     BitmapExhausted(start_block_id) |
     ///     BitmapIndexDeallocated(bitmap_index) |
     ///     DataOutOfBounds |
@@ -1404,20 +1467,22 @@ impl Inode {
     /// )
     pub fn create_child_inode(&self, name: &str, flags: FileFlags) -> Result<Self> {
         let mut fs = self.fs.lock();
+        self.inner.must_be_dir()?;
         let abs_inode = self.inner.create_child_inode(name, flags, &mut fs)?;
         Ok(Self::new(abs_inode, Arc::clone(&self.fs)))
     }
 
     /// Remove a child inode from the current inode.
-    /// 
+    ///
     /// # Arguments
     /// * name: the name of the child inode which will be removed
-    /// 
+    ///
     /// # Returns
     /// * Ok(())
     /// * Err(
-    ///     FnameDoesNotExist(name, inode bitmap index) |
+    ///     InodeMustBeWritable(bitmap index) |
     ///     InodeMustBeDirectory(bitmap index) |
+    ///     FnameDoesNotExist(name, inode bitmap index) |
     ///     DataOutOfBounds |
     ///     BitmapIndexDeallocated(bitmap_index) |
     ///     NoDroptableBlockCache |
@@ -1426,6 +1491,7 @@ impl Inode {
     /// )
     pub fn remove_child_inode(&self, name: &str) -> Result<()> {
         let mut fs = self.fs.lock();
+        self.inner.must_be_dir()?;
         self.inner.remove_child_inode(name, &mut fs)
     }
 }
@@ -1536,7 +1602,7 @@ mod tests {
         let mut mfs = fs.lock();
         let abstract_inode = mfs.root_abstract_inode();
         let child_inode = abstract_inode
-            .create_child_inode("test", FileFlags::VALID, &mut mfs)
+            .create_child_inode("test", FileFlags::RW, &mut mfs)
             .unwrap();
         assert!(child_inode
             .modify_disk_inode(&tracker, |disk_inode| {
@@ -1601,7 +1667,7 @@ mod tests {
         let tracker = BLOCK_DEVICE_REGISTER.lock().mount(mock).unwrap();
         let fs = FS::initialize(InitMode::TotalBlocks(15), 1, &tracker).unwrap();
         let inode = fs.root_inode();
-        let child_inode = inode.create_child_inode("test", FileFlags::VALID).unwrap();
+        let child_inode = inode.create_child_inode("test", FileFlags::RW).unwrap();
         assert!(child_inode.to_byte_size(BLOCK_BYTE_SIZE as u64).is_ok());
         let mut read_buffer = [0u8; BLOCK_BYTE_SIZE as usize];
         let mut write_buffer = [0u8; BLOCK_BYTE_SIZE as usize];

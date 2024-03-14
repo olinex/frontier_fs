@@ -34,24 +34,30 @@ use vfs::FileFlags;
 bitflags! {
     #[derive(Clone, Copy)]
     pub struct OpenFlags: u32 {
-        const READABLE = 1 << 0;
-        const WRITABLE = 1 << 1;
-        const APPEND = 1 << 2;
-        const CREATE = 1 << 3;
-        const TRUNCATE = 1 << 4;
-        const DIRECTORY = 1 << 5;
-        const RW = Self::READABLE.bits() | Self::WRITABLE.bits();
-        const RDIR = Self::READABLE.bits() | Self::DIRECTORY.bits();
+        const EXEC = 1 << 0;
+        const READ = 1 << 1;
+        const WRITE = 1 << 2;
+        const APPEND = 1 << 3;
+        const CREATE = 1 << 4;
+        const TRUNC = 1 << 5;
+        const DIRECTORY = 1 << 6;
+        const RW = Self::READ.bits() | Self::WRITE.bits();
+        const RWX = Self::RW.bits() | Self::EXEC.bits();
+        const RDIR = Self::READ.bits() | Self::DIRECTORY.bits();
         const RWDIR = Self::RW.bits() | Self::DIRECTORY.bits();
     }
 }
 impl OpenFlags {
-    pub fn is_readable(&self) -> bool {
-        self.contains(OpenFlags::READABLE)
+    pub fn is_exec(&self) -> bool {
+        self.contains(OpenFlags::EXEC)
     }
 
-    pub fn is_writable(&self) -> bool {
-        self.contains(OpenFlags::WRITABLE)
+    pub fn is_read(&self) -> bool {
+        self.contains(OpenFlags::READ)
+    }
+
+    pub fn is_write(&self) -> bool {
+        self.contains(OpenFlags::WRITE)
     }
 
     pub fn is_append(&self) -> bool {
@@ -62,8 +68,8 @@ impl OpenFlags {
         self.contains(OpenFlags::CREATE)
     }
 
-    pub fn is_truncate(&self) -> bool {
-        self.contains(OpenFlags::TRUNCATE)
+    pub fn is_trunc(&self) -> bool {
+        self.contains(OpenFlags::TRUNC)
     }
 
     pub fn is_directory(&self) -> bool {
@@ -73,8 +79,17 @@ impl OpenFlags {
 impl From<FileFlags> for OpenFlags {
     fn from(flags: FileFlags) -> Self {
         let mut open_flags = OpenFlags::empty();
-        if flags.is_dir() {
-            open_flags |= OpenFlags::RWDIR;
+        if flags.is_executable() {
+            open_flags |= OpenFlags::EXEC;
+        }
+        if flags.is_readable() {
+            open_flags |= OpenFlags::READ;
+        }
+        if flags.is_writable() {
+            open_flags |= OpenFlags::WRITE;
+        }
+        if flags.is_directory() {
+            open_flags |= OpenFlags::DIRECTORY;
         }
         open_flags
     }
@@ -82,8 +97,17 @@ impl From<FileFlags> for OpenFlags {
 impl From<OpenFlags> for FileFlags {
     fn from(flags: OpenFlags) -> Self {
         let mut file_flags = FileFlags::VALID;
+        if flags.is_exec() {
+            file_flags |= FileFlags::EXECUTABLE;
+        }
+        if flags.is_read() {
+            file_flags |= FileFlags::READABLE;
+        }
+        if flags.is_write() {
+            file_flags |= FileFlags::WRITABLE;
+        }
         if flags.is_directory() {
-            file_flags |= FileFlags::DIR;
+            file_flags |= FileFlags::DIRECTORY;
         }
         file_flags
     }

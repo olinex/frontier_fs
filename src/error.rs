@@ -76,6 +76,10 @@ pub enum FFSError {
     #[error("Inode {0} must be a directory")]
     InodeMustBeDirectory(u32),
 
+    #[groups(vfs)]
+    #[error("Inode {0} must be a file")]
+    InodeMustBeFile(u32),
+
     #[groups(others, parse)]
     #[error("core error: {0}")]
     ParseUtf8Error(#[from] alloc::str::Utf8Error),
