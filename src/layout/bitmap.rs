@@ -33,15 +33,15 @@ pub(crate) struct Bitmap {
 }
 impl Bitmap {
     /// Decompress the bitmap index to:
-    /// * block index
-    /// * unit index
-    /// * bit offset
+    ///     - block index
+    ///     - unit index
+    ///     - bit offset
     ///
-    /// # Arguments
-    /// * bitmap_index: The index of the bit in the bitmap
+    /// - Arguments
+    ///     - bitmap_index: The index of the bit in the bitmap
     ///
-    /// # Returns
-    /// * (block id, unit index, bit offset)
+    /// - Returns
+    ///     - (block id, unit index, bit offset)
     fn decompress(bitmap_index: usize) -> (usize, usize, usize) {
         let block_index = bitmap_index / BLOCK_BIT_SIZE;
         let bit = bitmap_index % BLOCK_BIT_SIZE;
@@ -59,10 +59,10 @@ impl Bitmap {
 
     /// Create a new bitmap
     ///
-    /// # Arguments
-    /// * start_block_id: the block id which will be used for storing the bitmap data.
-    /// * blocks: the count of the blocks used to store the bitmap data.
-    /// * usable_bits: The count of the usable bits in the bitmap
+    /// - Arguments
+    ///     - start_block_id: the block id which will be used for storing the bitmap data.
+    ///     - blocks: the count of the blocks used to store the bitmap data.
+    ///     - usable_bits: The count of the usable bits in the bitmap
     pub(crate) fn new(start_block_id: usize, blocks: usize, usable_bits: usize) -> Self {
         Self {
             start_block_id,
@@ -74,12 +74,13 @@ impl Bitmap {
     /// Alloc a new bit and return the bitmap index.
     /// If all the bit were already allocated, return Err, otherwise return the bitmap index.
     ///
-    /// # Arguments
-    /// * tracker: the tracker for the block device which was mounted
+    /// - Arguments
+    ///     - tracker: the tracker for the block device which was mounted
     ///
-    /// # Returns
-    /// * Ok(bitmap index)
-    /// * Err(BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - BitmapExhausted(start_block_id) 
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     pub(crate) fn alloc(&self, tracker: &Arc<BlockDeviceTracker>) -> Result<usize> {
         let mut manager = BLOCK_CACHE_MANAGER.lock();
         for block_index in 0..self.blocks {
@@ -118,13 +119,13 @@ impl Bitmap {
     /// Dealloc a old bit.
     /// If the bit is already deallocated, return Err
     ///
-    /// # Arguments
-    /// * tracker: the tracker for the block device which was mounted
-    /// * bitmap_index: the index of the bit in the bitmap to deallocate
+    /// - Arguments
+    ///     - tracker: the tracker for the block device which was mounted
+    ///     - bitmap_index: the index of the bit in the bitmap to deallocate
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Returns
+    ///     - Ok(())
+    ///     - Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
     pub(crate) fn dealloc(&self, tracker: &Arc<BlockDeviceTracker>, bitmap_index: usize) -> Result<()> {
         let (block_index, unit_index, bit_offset) = Self::decompress(bitmap_index);
         let once = |value: &mut usize| {

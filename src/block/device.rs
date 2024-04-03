@@ -24,25 +24,25 @@ pub trait BlockDevice: Send + Sync + Any {
     /// Read a block of bytes from device and save it into the buffer
     /// the length of the buffer must be same with [`crate::configs::BLOCK_BYTE_SIZE`]
     ///
-    /// # Arguments
-    /// * id: the unique identifier of the block
-    /// * buffer: the buffer which will store the block byte data
+    /// - Arguments
+    ///     - id: the unique identifier of the block
+    ///     - buffer: the buffer which will store the block byte data
     ///
-    /// # Returns
-    /// * Some(error code): the error code returns when the block device gets corrupted
-    /// * None: everything is Ok
+    /// - Returns
+    ///     - Some(error code): the error code returns when the block device gets corrupted
+    ///     - None: everything is Ok
     fn read_block(&self, id: usize, buffer: &mut [u8]) -> Option<isize>;
 
     /// Write a block of bytes to device which was read from the buffer
     /// the length of the buffer must be same with [`crate::configs::BLOCK_BYTE_SIZE`]
     ///
-    /// # Arguments
-    /// * id: the unique identifier of the block
-    /// * buffer: the buffer which will be read and the data will be written to device
+    /// - Arguments
+    ///     - id: the unique identifier of the block
+    ///     - buffer: the buffer which will be read and the data will be written to device
     ///
-    /// # Returns
-    /// * Some(error code): the error code returns when the block device gets corrupted
-    /// * None: everything is Ok
+    /// - Returns
+    ///     - Some(error code): the error code returns when the block device gets corrupted
+    ///     - None: everything is Ok
     fn write_block(&self, id: usize, buffer: &[u8]) -> Option<isize>;
 }
 
@@ -55,9 +55,9 @@ pub struct BlockDeviceTracker {
 impl BlockDeviceTracker {
     /// Create a new block device tracker, this method can only be called by the file system
     ///
-    /// # Arguments
-    /// * device_id: The unique device number allocated from the file system
-    /// * device: The device which was stored in the heap space memory
+    /// - Arguments
+    ///     - device_id: The unique device number allocated from the file system
+    ///     - device: The device which was stored in the heap space memory
     fn new(device_id: usize, device: Box<dyn BlockDevice>) -> Self {
         Self { device_id, device }
     }
@@ -93,12 +93,12 @@ impl BlockDeviceRegister {
 
     /// Mount the device into file system and return the unique device identifier.
     ///
-    /// # Arguments
-    /// * device: the dynamic block device
+    /// - Arguments
+    ///     - device: the dynamic block device
     ///
-    /// # Returns
-    /// * Ok(device id)
-    /// * Err(DeviceIdExhausted | NoMoreDeviceMountable)
+    /// - Errors
+    ///     - DeviceIdExhausted 
+    ///     - NoMoreDeviceMountable
     pub fn mount(&mut self, device: Box<dyn BlockDevice>) -> Result<Arc<BlockDeviceTracker>> {
         if self.next_id == usize::MAX {
             Err(FFSError::DeviceIdExhausted)
@@ -115,12 +115,12 @@ impl BlockDeviceRegister {
 
     /// Unmount the device from file system
     ///
-    /// # Arguments
-    /// * device: the dynamic block device
+    /// - Arguments
+    ///     - device: the dynamic block device
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(BusyDeviceUndropptable | DeviceIdDoesNotExist)
+    /// - Errors
+    ///     - BusyDeviceUndropptable 
+    ///     - DeviceIdDoesNotExist
     pub fn unmount(&mut self, tracker: Arc<BlockDeviceTracker>) -> Result<()> {
         if self.map.get(&tracker.device_id).is_some() {
             if Arc::strong_count(&tracker) != 2 {
@@ -135,9 +135,9 @@ impl BlockDeviceRegister {
 
     /// Private clear all devices from register
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(BusyDeviceUndropptable | DeviceIdDoesNotExist)
+    /// - Errors
+    ///     - BusyDeviceUndropptable 
+    ///     - DeviceIdDoesNotExist
     fn _clear(&mut self) -> Result<()> {
         let trackers: Vec<Arc<BlockDeviceTracker>> = self
             .map
@@ -152,9 +152,9 @@ impl BlockDeviceRegister {
 
     /// Clear all devices from register
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(BusyDeviceUndropptable | DeviceIdDoesNotExist)
+    /// - Errors
+    ///     - BusyDeviceUndropptable
+    ///     - DeviceIdDoesNotExist
     pub fn clear(&mut self) -> Result<()> {
         let mut manager = BLOCK_CACHE_MANAGER.lock();
         manager.clear();
@@ -166,9 +166,9 @@ impl BlockDeviceRegister {
     /// Clear all device from register and reset the device id.
     /// Only for unit tests
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(BusyDeviceUndropptable | DeviceIdDoesNotExist)
+    /// - Errors
+    ///     - BusyDeviceUndropptable 
+    ///     - DeviceIdDoesNotExist
     #[cfg(test)]
     pub fn reset(&mut self) -> Result<()> {
         let mut manager = BLOCK_CACHE_MANAGER.lock();

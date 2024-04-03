@@ -251,10 +251,10 @@ impl Fentry {
 
     /// Create a new file entry
     ///
-    /// # Arguments
-    /// * name: the name of the file to create
-    /// * inode_bitmap_index: the bitmap index of the inode
-    /// * flags: the glags that indicate file's meta infos
+    /// - Arguments
+    ///     - name: the name of the file to create
+    ///     - inode_bitmap_index: the bitmap index of the inode
+    ///     - flags: the glags that indicate file's meta infos
     fn new(inode_bitmap_index: u32, flags: FileFlags, next_hash_byte: u8) -> Self {
         let bits = flags.bits() | FileFlags::VALID.bits();
         let flags = FileFlags::from_bits(bits).unwrap();
@@ -315,20 +315,17 @@ impl AbstractInode {
     /// When the new byte size is greater than the original byte size, this method will allocate some needed new blocks.
     /// When the new byte size is smaller than the original byte size, this method will deallocate some blocks that are no longer in use.
     ///
-    /// # Arguments
-    /// * new_byte_size: the new byte size disk inode will changed to
-    /// * disk_inode: the disk inode which will be modified
-    /// ference of the file system which owns the current disk inode
+    /// - Arguments
+    ///     - new_byte_size: the new byte size disk inode will changed to
+    ///     - disk_inode: the disk inode which will be modified
+    ///     - fs: ference of the file system which owns the current disk inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(
-    ///     DataOutOfBounds |
-    ///     BitmapExhausted(start_block_id) |
-    ///     BitmapIndexDeallocated(bitmap_index) |
-    ///     NoDroptableBlockCache |
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - BitmapExhausted(start_block_id)
+    ///     - BitmapIndexDeallocated(bitmap_index)
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn to_byte_size(
         new_byte_size: u64,
@@ -350,13 +347,14 @@ impl AbstractInode {
 
     /// Provides a method to reading disk inode and return the result of the closure
     ///
-    /// # Arguments
-    /// * tracker: the tracker for the block device which was mounted
-    /// * f: the closure function which receives the reference of the disk inode and return the result
+    /// - Arguments
+    ///     - tracker: the tracker for the block device which was mounted
+    ///     - f: the closure function which receives the reference of the disk inode and return the result
     ///
-    /// # Returns
-    /// * Ok(V): the result value wrapped in Result
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn read_disk_inode<V>(
         &self,
@@ -372,13 +370,14 @@ impl AbstractInode {
 
     /// Provides a method to writing disk inode and return the result of the closure
     ///
-    /// # Arguments
-    /// * tracker: the tracker for the block device which was mounted
-    /// * f: the closure function which receives the mutable reference of the disk inode and return the result
+    /// - Arguments
+    ///     - tracker: the tracker for the block device which was mounted
+    ///     - f: the closure function which receives the mutable reference of the disk inode and return the result
     ///
-    /// # Returns
-    /// * Ok(V): the result value wrapped in Result
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn modify_disk_inode<V>(
         &self,
@@ -394,12 +393,13 @@ impl AbstractInode {
 
     /// Get the count of the leaf blocks in the disk inode
     ///
-    /// # Arguments
-    /// * tracker: the tracker for the block device which was mounted
+    /// - Arguments
+    ///     - tracker: the tracker for the block device which was mounted
     ///
-    /// # Returns
-    /// * Ok(leaf block count)
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn leaf_block_count(&self, tracker: &Arc<BlockDeviceTracker>) -> Result<u32> {
         self.read_disk_inode(tracker, |disk_inode| disk_inode.leaf_block_count())
@@ -409,11 +409,11 @@ impl AbstractInode {
 impl AbstractInode {
     /// Create a new Inode as file
     ///
-    /// # Arguments
-    /// * inode_bitmap_index: the index of the disk in the bitmap
-    /// * disk_inode_block_id: the block id in the block device
-    /// * disk_indde_block_offset: the offset of the disk inode in the block
-    /// * flags: the file flags of the disk inode
+    /// - Arguments
+    ///     - inode_bitmap_index: the index of the disk in the bitmap
+    ///     - disk_inode_block_id: the block id in the block device
+    ///     - disk_indde_block_offset: the offset of the disk inode in the block
+    ///     - flags: the file flags of the disk inode
     pub(crate) fn new(
         inode_bitmap_index: u32,
         disk_inode_block_id: u32,
@@ -431,16 +431,13 @@ impl AbstractInode {
     /// clear all blocks in the disk inode as a file.
     /// Be careful, this function does not deallocate the inode
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(
-    ///     FFSError::NoDroptableBlockCache |
-    ///     FFSError::DataOutOfBounds |
-    ///     FFSError::BitmapIndexDeallocated(bitmap_index)
-    /// )
+    /// - Errors
+    ///     - NoDroptableBlockCache
+    ///     - DataOutOfBounds
+    ///     - BitmapIndexDeallocated(bitmap_index)
     fn clear_as_file(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<()> {
         let tracker = fs.tracker();
         let data_block_ids =
@@ -472,9 +469,9 @@ impl AbstractInode {
 
     /// Convert file entry to abstract inode
     ///
-    /// # Arguments
-    /// * fentry: the file entry to convert
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - fentry: the file entry to convert
+    ///     - fs: the mutable reference of the file system which owns the current inode
     #[inline(always)]
     fn convert_to_inode(fentry: &Fentry, fs: &mut MutexGuard<FrontierFileSystem>) -> Self {
         let (disk_inode_block_id, disk_inode_block_offset) =
@@ -489,18 +486,15 @@ impl AbstractInode {
 
     /// Increase the current inode just one block size
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(new block id)
-    /// * Err(
-    ///     DataOutOfBounds |
-    ///     BitmapExhausted(start_block_id) |
-    ///     BitmapIndexDeallocated(bitmap_index) |
-    ///     NoDroptableBlockCache |
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - BitmapExhausted(start_block_id)
+    ///     - BitmapIndexDeallocated(bitmap_index)
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn increase_block(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<u32> {
         let tracker = Arc::clone(fs.tracker());
@@ -517,14 +511,15 @@ impl AbstractInode {
 
     /// Read the child instance from block device cache
     ///
-    /// # Arguments
-    /// * child: impl AsBytesMut
-    /// * start_offset: the byte offset to start reading from
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - child: impl AsBytesMut
+    ///     - start_offset: the byte offset to start reading from
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn read_child<T>(
         &self,
@@ -546,16 +541,18 @@ impl AbstractInode {
         })?
     }
 
-    /// Read the raw byte data from block device cache
+    /// Read the raw byte data from block device cache,
+    /// return the byte size of the data which have been readed from block device and written to the buffer
     ///
-    /// # Arguments
-    /// * buffer: the byte slice which stores the raw data will be readed from
-    /// * start_offset: the byte offset to start reading from
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - buffer: the byte slice which stores the raw data will be readed from
+    ///     - start_offset: the byte offset to start reading from
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(the byte size of the data which have been readed from block device and written to the buffer)
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn read_buffer(
         &self,
@@ -571,14 +568,15 @@ impl AbstractInode {
 
     /// Write the child instance to block device cache
     ///
-    /// # Arguments
-    /// * child: impl AsBytes
-    /// * start_offset: the byte offset to start writting to
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - child: impl AsBytes
+    ///     - start_offset: the byte offset to start writting to
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn write_child<T>(
         &self,
@@ -602,14 +600,15 @@ impl AbstractInode {
 
     /// Write the raw byte data to block device cache
     ///
-    /// # Arguments
-    /// * buffer: the byte slice which stores the raw data will be writted to block device cache
-    /// * start_offset: the byte offset to start writting to
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - buffer: the byte slice which stores the raw data will be writted to block device cache
+    ///     - start_offset: the byte offset to start writting to
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     #[inline(always)]
     fn write_buffer(
         &self,
@@ -617,20 +616,28 @@ impl AbstractInode {
         start_offset: u64,
         fs: &mut MutexGuard<FrontierFileSystem>,
     ) -> Result<usize> {
-        let tracker = fs.tracker();
-        self.modify_disk_inode(tracker, |disk_inode| {
+        let tracker = Arc::clone(fs.tracker());
+        self.modify_disk_inode(&tracker, |disk_inode| {
+            let new_byte_size = start_offset + buffer.len() as u64;
+            Self::to_byte_size(
+                new_byte_size,
+                disk_inode,
+                fs,
+            )?;
+            let tracker = fs.tracker();
             disk_inode.write_at(tracker, start_offset, buffer)
         })?
     }
 
     /// Create a new iterator which will read all file entries from current directory
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(map iterator)
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn to_entry_iter<'a>(
         &'a self,
         fs: &mut MutexGuard<FrontierFileSystem>,
@@ -642,15 +649,16 @@ impl AbstractInode {
 
     /// Create a new hard link to current directory
     ///
-    /// # Arguments
-    /// * name: the name of the hard link
-    /// * inode_bitmap_index: the inode bitmap index which was refected by the hard link
-    /// * flags: the flags of the hard link
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - name: the name of the hard link
+    ///     - inode_bitmap_index: the inode bitmap index which was refected by the hard link
+    ///     - flags: the flags of the hard link
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn create_hard_link(
         &self,
         name: &str,
@@ -678,14 +686,15 @@ impl AbstractInode {
     /// Initialize the current inode as directory.
     /// Each directory have the parent hard link and self hard link.
     ///
-    /// # Arguments
-    /// * parent_inode_bitmap_index: the inode bitmap index of the parent directory
-    /// * parent_flags: the flags of the parent directory hard link
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - parent_inode_bitmap_index: the inode bitmap index of the parent directory
+    ///     - parent_flags: the flags of the parent directory hard link
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub(crate) fn init_as_dir(
         &self,
         parent_inode_bitmap_index: u32,
@@ -731,12 +740,14 @@ impl AbstractInode {
     /// Check if the current directory is empty.
     /// Only self file name and parent file name can be exists.
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// * Returns
-    /// * Ok(if is empty)
-    /// * Err(DataOutOfBounds | InodeMustBeDirectory(bitmap index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub(crate) fn dir_is_empty(&self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<bool> {
         self.must_be_dir()?;
         let mut iterator = self.to_entry_iter(fs)?;
@@ -753,12 +764,14 @@ impl AbstractInode {
 
     /// Get all the child's names, excluding the self directory name and parent directory name.
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// Ok(Vec<String>)
-    /// Err(DataOutOfBounds | InodeMustBeDirectory(bitmap index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub(crate) fn list_child_names(
         &self,
         fs: &mut MutexGuard<FrontierFileSystem>,
@@ -779,14 +792,19 @@ impl AbstractInode {
 
     /// Get the child abstract inode by name
     ///
-    /// # Arguments
-    /// * name: The name of child abstract inode will be find
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - name: The name of child abstract inode will be find
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(None): child does not exist
-    /// * Ok(Some(child)): child exists and returns the child
-    /// * Err(DataOutOfBounds | InodeMustBeDirectory(bitmap index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Returns
+    ///     - Ok(None): child does not exist
+    ///     - Ok(Some(child)): child exists and returns the child
+    /// 
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn get_child_inode(
         &self,
         name: &str,
@@ -830,22 +848,19 @@ impl AbstractInode {
 
     /// Create a new child abstract inode.
     ///
-    /// # Arguments
-    /// * name: The name of the child abstract inode
-    /// * flags: The flags of the child abstract inode
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - name: The name of the child abstract inode
+    ///     - flags: The flags of the child abstract inode
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(child)
-    /// * Err(
-    ///     DuplicatedFname(name, inode bitmap index) |
-    ///     InodeMustBeDirectory(bitmap index) |
-    ///     BitmapExhausted(start_block_id) |
-    ///     BitmapIndexDeallocated(bitmap_index) |
-    ///     DataOutOfBounds |
-    ///     NoDroptableBlockCache |
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - DuplicatedFname(name, inode bitmap index)
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - BitmapExhausted(start_block_id)
+    ///     - BitmapIndexDeallocated(bitmap_index)
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn create_child_inode(
         &self,
         name: &str,
@@ -914,21 +929,18 @@ impl AbstractInode {
 
     /// Remove child inode from current directory abstract inode
     ///
-    /// # Arguments
-    /// * name: The name of the child will be removed
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - name: The name of the child will be removed
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(
-    ///     FnameDoesNotExist(name, inode bitmap index) |
-    ///     InodeMustBeDirectory(bitmap index) |
-    ///     DataOutOfBounds |
-    ///     BitmapIndexDeallocated(bitmap_index) |
-    ///     NoDroptableBlockCache |
-    ///     RawDeviceError(error code) |
-    ///     DeleteNonEmptyDirectory(name, inode bitmap index)
-    /// )
+    /// - Errors
+    ///     - FnameDoesNotExist(name, inode bitmap index)
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - DataOutOfBounds
+    ///     - BitmapIndexDeallocated(bitmap_index)
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
+    ///     - DeleteNonEmptyDirectory(name, inode bitmap index)
     fn remove_child_inode(
         &self,
         name: &str,
@@ -1040,19 +1052,25 @@ impl AbstractInode {
     /// which will be used to switch position with input destination child inode.
     ///
     /// the ending child inode have three cases:
-    /// * 1 - ending child inode is the input child inode itself
-    /// * 2 - ending child inode and input child inode are storing in the same leaf block
-    /// * 3 - ending child inode and input child inode are storing in the different leaf blocks
+    ///     - 1 - ending child inode is the input child inode itself
+    ///     - 2 - ending child inode and input child inode are storing in the same leaf block
+    ///     - 3 - ending child inode and input child inode are storing in the different leaf blocks
     ///
-    /// # Arguments
-    /// * dst_leaf_index: the leaf index of the input child inode
-    /// * dst_hash_index: the hash index of the input child inode
-    /// * dst_item_index: the item index of the input child inode
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - dst_leaf_index: the leaf index of the input child inode
+    ///     - dst_hash_index: the hash index of the input child inode
+    ///     - dst_item_index: the item index of the input child inode
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok((src leaf index, src hash index, src item index))
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Returns
+    ///     - src leaf index
+    ///     - src hash index
+    ///     - src item index
+    /// 
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn find_ending_child_inode(
         &self,
         dst_leaf_index: u32,
@@ -1081,13 +1099,19 @@ impl AbstractInode {
 
     /// Find the ending child inode after input ending child inode, which is storing in other leaf blocks.
     ///
-    /// # Arguments
-    /// * leaf_index: The index of the leaf blocks
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - leaf_index: The index of the leaf blocks
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok((src leaf index, src hash index, src item index))
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Returns
+    ///     - src leaf index
+    ///     - src hash index
+    ///     - src item index
+    /// 
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn find_other_leaf_ending_child_inode(
         &self,
         leaf_index: u32,
@@ -1125,12 +1149,13 @@ impl AbstractInode {
     /// Each time we remove child inode, it is possible the last child inode in the blocks,
     /// so we should try to clear those blocks.
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
-    ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
+    /// 
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn clear_empty_ending_leaf_indexes(
         &self,
         fs: &mut MutexGuard<FrontierFileSystem>,
@@ -1203,8 +1228,9 @@ struct AbstractInodeEntryIterator<'a> {
 impl<'a> AbstractInodeEntryIterator<'a> {
     /// Create a new iterator
     ///
-    /// * inode: The reference to the abstract inode
-    /// * leaf_block_count: The number of leaf blocks of the abstract inode
+    /// - Arguments
+    ///     - inode: The reference to the abstract inode
+    ///     - leaf_block_count: The number of leaf blocks of the abstract inode
     fn new(inode: &'a AbstractInode, leaf_block_count: u32) -> Self {
         Self {
             inode,
@@ -1220,12 +1246,13 @@ impl<'a> AbstractInodeEntryIterator<'a> {
 
     /// Read the fentry into iterator
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
-    ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
+    /// 
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn read_fentry(&mut self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<()> {
         let start_offset =
             Fentry::cal_start_offset(self.leaf_index, self.hash_index, self.item_index);
@@ -1234,12 +1261,13 @@ impl<'a> AbstractInodeEntryIterator<'a> {
 
     /// Read the fname into iterator
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn read_fname(&mut self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<()> {
         let start_offset =
             Fname::cal_start_offset(self.leaf_index, self.hash_index, self.item_index);
@@ -1251,13 +1279,17 @@ impl<'a> AbstractInodeEntryIterator<'a> {
     /// and the file entry and file name was loaded successfully.
     /// If returns false, the iterator has no next entry
     ///
-    /// # Arguments
-    /// * fs: the mutable reference of the file system which owns the current inode
+    /// - Arguments
+    ///     - fs: the mutable reference of the file system which owns the current inode
     ///
-    /// * Returns
-    /// * Ok(true): has next entry
-    /// * Ok(false): has no next entry
-    /// * Err(DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Returns
+    ///     - Ok(true): has next entry
+    ///     - Ok(false): no next entry
+    /// 
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     fn next(&mut self, fs: &mut MutexGuard<FrontierFileSystem>) -> Result<bool> {
         if !self.has_next {
             return Ok(false);
@@ -1298,9 +1330,9 @@ pub struct Inode {
 impl Inode {
     /// Create a new inode
     ///
-    /// # Arguments
-    /// * inner: abstract inode instance
-    /// * fs: the mutable frontier file system
+    /// - Arguments
+    ///     - inner: abstract inode instance
+    ///     - fs: the mutable frontier file system
     pub(crate) fn new(inner: AbstractInode, fs: Arc<Mutex<FrontierFileSystem>>) -> Self {
         Inode { inner, fs }
     }
@@ -1320,17 +1352,14 @@ impl Inode {
     /// However, when the data in the device is not enough to fill the entire slice,
     /// you need to make your own judgment based on the length of the read bytes returned.
     ///
-    /// # Arguments
-    /// * buffer: the mutable buffer which will be writed
-    /// * start_offset: the offset where the data starts to be read
+    /// - Arguments
+    ///     - buffer: the mutable buffer which will be writed
+    ///     - start_offset: the offset where the data starts to be read
     ///
-    /// # Returns
-    /// * Ok(read bytes length)
-    /// * Err(
-    ///     DataOutOfBounds |
-    ///     NoDroptableBlockCache |
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub fn read_buffer(&self, buffer: &mut [u8], start_offset: u64) -> Result<usize> {
         let mut fs = self.fs.lock();
         self.inner.read_buffer(buffer, start_offset, &mut fs)
@@ -1341,17 +1370,14 @@ impl Inode {
     /// When the block device is not enough space to fill,
     /// you need to make your own judgment based on the length of the write bytes returned.
     ///
-    /// # Arguments
-    /// * buffer: the inmmutable buffer which will be read
-    /// * start_offset: the offset where the data starts to be writed
+    /// - Arguments
+    ///     - buffer: the inmmutable buffer which will be read
+    ///     - start_offset: the offset where the data starts to be writed
     ///
-    /// # Returns
-    /// * Ok(write bytes length)
-    /// * Err(
-    ///     DataOutOfBounds |
-    ///     NoDroptableBlockCache |
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub fn write_buffer(&self, buffer: &[u8], start_offset: u64) -> Result<usize> {
         let mut fs = self.fs.lock();
         self.inner.write_buffer(buffer, start_offset, &mut fs)
@@ -1359,13 +1385,10 @@ impl Inode {
 
     /// Read all bytes from the block device an return the bytes vector.
     ///
-    /// # Returns
-    /// * Ok(Vec<bytes>)
-    /// * Err(
-    ///     DataOutOfBounds | 
-    ///     NoDroptableBlockCache | 
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub fn read_all(&self) -> Result<Vec<u8>> {
         let mut fs = self.fs.lock();
         let mut result = Vec::new();
@@ -1384,14 +1407,11 @@ impl Inode {
 
     /// List all the name of the child inodes
     ///
-    /// # Returns
-    /// * Ok(Vec<Strings>)
-    /// * Err(
-    ///     InodeMustBeDirectory(bitmap index) | 
-    ///     DataOutOfBounds | 
-    ///     NoDroptableBlockCache | 
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub fn list_child_names(&self) -> Result<Vec<String>> {
         let mut fs = self.fs.lock();
         self.inner.must_be_dir()?;
@@ -1403,17 +1423,14 @@ impl Inode {
     /// because we can only adjust it based on integer multiples of the number of bytes in the block.
     /// As a result, the adjusted inode will generally be larger than the specified number of bytes.
     ///
-    /// # Arguments
-    /// * new_byte_size: the new byte size of the inode
+    /// - Arguments
+    ///     - new_byte_size: the new byte size of the inode
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(
-    ///     InodeMustBeFile(bitmap index) | 
-    ///     DataOutOfBounds | 
-    ///     NoDroptableBlockCache | 
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - InodeMustBeFile(bitmap index)
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub fn to_byte_size(&self, new_byte_size: u64) -> Result<()> {
         let mut fs = self.fs.lock();
         self.inner.must_be_file()?;
@@ -1425,18 +1442,14 @@ impl Inode {
 
     /// Get child inode from the current directory inode according to the name incoming.
     ///
-    /// # Arguments
-    /// * name: the name string of the child inode
+    /// - Arguments
+    ///     - name: the name string of the child inode
     ///
-    /// # Returns
-    /// * Ok(Some(chld inode))
-    /// * Ok(None)
-    /// * Err(
-    ///     InodeMustBeDirectory(bitmap index) | 
-    ///     DataOutOfBounds | 
-    ///     NoDroptableBlockCache | 
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub fn get_child_inode(&self, name: &str) -> Result<Option<Self>> {
         let mut fs = self.fs.lock();
         self.inner.must_be_dir()?;
@@ -1449,22 +1462,19 @@ impl Inode {
 
     /// Create a new child inode according to the name and flags arguments incomming.
     ///
-    /// # Arguments
-    /// * name: the name of the new child inode
-    /// * flags: the file flags of the new child inode
+    /// - Arguments
+    ///     - name: the name of the new child inode
+    ///     - flags: the file flags of the new child inode
     ///
-    /// # Returns
-    /// * Ok(child inode)
-    /// * Err(
-    ///     InodeMustBeWritable(bitmap index) |
-    ///     InodeMustBeDirectory(bitmap index) |
-    ///     DuplicatedFname(name, inode bitmap index) |
-    ///     BitmapExhausted(start_block_id) |
-    ///     BitmapIndexDeallocated(bitmap_index) |
-    ///     DataOutOfBounds |
-    ///     NoDroptableBlockCache |
-    ///     RawDeviceError(error code)
-    /// )
+    /// - Errors
+    ///     - InodeMustBeWritable(bitmap index)
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - DuplicatedFname(name, inode bitmap index)
+    ///     - BitmapExhausted(start_block_id)
+    ///     - BitmapIndexDeallocated(bitmap_index)
+    ///     - DataOutOfBounds
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
     pub fn create_child_inode(&self, name: &str, flags: FileFlags) -> Result<Self> {
         let mut fs = self.fs.lock();
         self.inner.must_be_dir()?;
@@ -1474,20 +1484,18 @@ impl Inode {
 
     /// Remove a child inode from the current inode.
     ///
-    /// # Arguments
-    /// * name: the name of the child inode which will be removed
+    /// - Arguments
+    ///     - name: the name of the child inode which will be removed
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(
-    ///     InodeMustBeWritable(bitmap index) |
-    ///     InodeMustBeDirectory(bitmap index) |
-    ///     FnameDoesNotExist(name, inode bitmap index) |
-    ///     DataOutOfBounds |
-    ///     BitmapIndexDeallocated(bitmap_index) |
-    ///     NoDroptableBlockCache |
-    ///     RawDeviceError(error code) |
-    ///     DeleteNonEmptyDirectory(name, inode bitmap index)
+    /// - Errors
+    ///     - InodeMustBeWritable(bitmap index)
+    ///     - InodeMustBeDirectory(bitmap index)
+    ///     - FnameDoesNotExist(name, inode bitmap index)
+    ///     - DataOutOfBounds
+    ///     - BitmapIndexDeallocated(bitmap_index)
+    ///     - NoDroptableBlockCache
+    ///     - RawDeviceError(error code)
+    ///     - DeleteNonEmptyDirectory(name, inode bitmap index)
     /// )
     pub fn remove_child_inode(&self, name: &str) -> Result<()> {
         let mut fs = self.fs.lock();

@@ -28,13 +28,12 @@ pub(crate) struct BlockCache {
 impl BlockCache {
     /// Create a new block cache object and read data immediately.
     ///
-    /// # Arguments
-    /// * id: the block id of the device
-    /// * tracker: the tracker for the block device which was mounted
+    /// - Arguments
+    ///     - id: the block id of the device
+    ///     - tracker: the tracker for the block device which was mounted
     ///
-    /// # Returns
-    /// * Ok(BlockCache)
-    /// * Err(RawDeviceError(error code))
+    /// - Errors
+    ///     - RawDeviceError(error code)
     fn new(id: usize, tracker: Arc<BlockDeviceTracker>) -> Result<Self> {
         let mut cache = ThinBox::new([0u8; BLOCK_BYTE_SIZE]);
         if let Some(err_code) = tracker.read_block(id, &mut *cache) {
@@ -51,11 +50,8 @@ impl BlockCache {
 
     /// Get the address of the cached data in memory
     ///
-    /// # Arguments
-    /// * offset: the offset of the cached bytes which start from zero
-    ///
-    /// # Returns
-    /// * usize: the pointer addres
+    /// - Arguments
+    ///     - offset: the offset of the cached bytes which start from zero
     #[inline(always)]
     fn addr_of_offset(&self, offset: usize) -> usize {
         &self.cache[offset] as *const _ as usize
@@ -63,11 +59,8 @@ impl BlockCache {
 
     /// Get the reference of the <T>
     ///
-    /// # Arguments
-    /// * offset: the offset of the cached bytes which start from zero
-    ///
-    /// # Returns
-    /// * ref T
+    /// - Arguments
+    ///     - offset: the offset of the cached bytes which start from zero
     #[inline(always)]
     fn get_ref<T>(&self, offset: usize) -> &T
     where
@@ -79,11 +72,8 @@ impl BlockCache {
 
     /// Get the mutable reference of the <T>
     ///
-    /// # Arguments
-    /// * offset: the offset of the cached bytes which start from zero
-    ///
-    /// # Returns
-    /// * mutable ref T
+    /// - Arguments
+    ///     - offset: the offset of the cached bytes which start from zero
     #[inline(always)]
     fn get_mut<T>(&mut self, offset: usize) -> &mut T
     where
@@ -96,13 +86,12 @@ impl BlockCache {
     /// Read data from block cache as the reference of the <T> and return the result of the closure.
     /// Be careful, the returned value isn't the copy of the original, but the original value in memory
     ///
-    /// # Arguments
-    /// * offset: the offset of the cached bytes which start from zero
-    /// * f: the closure function which receives the reference of the data
+    /// - Arguments
+    ///     - offset: the offset of the cached bytes which start from zero
+    ///     - f: the closure function which receives the reference of the data
     ///
-    /// # Returns
-    /// * Ok(the result of the closure)
-    /// * Err(DataOutOfBounds)
+    /// - Errors
+    ///     - DataOutOfBounds
     #[inline(always)]
     pub(crate) fn read<T, V>(&self, offset: usize, f: impl FnOnce(&T) -> V) -> Result<V> {
         if (offset + core::mem::size_of::<T>()) <= BLOCK_BYTE_SIZE {
@@ -114,13 +103,12 @@ impl BlockCache {
 
     /// Read data from block cache as the mutable reference of the <T> and return the result of the closure
     ///
-    /// # Arguments
-    /// * offset: the offset of the cached bytes which start from zero
-    /// * f: the closure function which receives the mutable reference of the data
+    /// - Arguments
+    ///     - offset: the offset of the cached bytes which start from zero
+    ///     - f: the closure function which receives the mutable reference of the data
     ///
-    /// # Returns
-    /// * Ok(the result of the closure)
-    /// * Err(DataOutOfBounds)
+    /// - Errors
+    ///     - DataOutOfBounds
     #[inline(always)]
     pub(crate) fn modify<T, V>(&mut self, offset: usize, f: impl FnOnce(&mut T) -> V) -> Result<V> {
         if (offset + core::mem::size_of::<T>()) <= BLOCK_BYTE_SIZE {
@@ -133,9 +121,8 @@ impl BlockCache {
 
     /// Write data into block device
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(RawDeviceError(error code))
+    /// - Errors
+    ///     - RawDeviceError(error code)
     pub(crate) fn sync(&mut self) -> Result<()> {
         if self.modified {
             if let Some(err_code) = self.tracker.write_block(self.id, &*self.cache) {
@@ -159,10 +146,10 @@ pub(crate) struct BlockCacheManager {
 }
 impl BlockCacheManager {
     /// Find the droptable block id in the cache list
-    ///
-    /// # Returns
-    /// * Some(block id)
-    /// * None: all of the blocks in the cache are using
+    /// 
+    /// - Returns
+    ///     - Some(device id, block id)
+    ///     - None
     fn find_droptable_id(&self) -> Option<(usize, usize)> {
         if let Some((key, _)) = self
             .map
@@ -178,13 +165,13 @@ impl BlockCacheManager {
     /// Load block cache which was saved in the manager's mapping.
     /// If cache does not exists, it will be loaded from the block device immediately
     ///
-    /// # Arguments
-    /// * device_id: the unique id of the device
-    /// * tracker: the tracker for the block device which was mounted
+    /// - Arguments
+    ///     - device_id: the unique id of the device
+    ///     - tracker: the tracker for the block device which was mounted
     ///
-    /// # Returns
-    /// * Ok(Arc<Mutex<BlockDevice>>)
-    /// * Err(NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     fn load_cache(
         &mut self,
         tracker: &Arc<BlockDeviceTracker>,
@@ -220,13 +207,13 @@ impl BlockCacheManager {
     /// Get block cache which is save in the manager's mapping.
     /// If cache does not exists, it will be loaded from the block device immediately
     ///
-    /// # Arguments
-    /// * block_id: the block id of the device
-    /// * tracker: the tracker for the block device which was mounted
+    /// - Arguments
+    ///     - block_id: the block id of the device
+    ///     - tracker: the tracker for the block device which was mounted
     ///
-    /// # Returns
-    /// * Ok(Arc<Mutex<BlockDevice>>)
-    /// * Err(NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     pub(crate) fn get(
         &mut self,
         tracker: &Arc<BlockDeviceTracker>,

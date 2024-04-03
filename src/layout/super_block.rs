@@ -35,11 +35,11 @@ use crate::configs::FS_MAGIC;
 /// ```
 ///
 /// In order to avoid naming confusion, we will unify the various index names in the naming block device here:
-/// * block id:                             The ID of a block that uniquely identifies the entire block device
-/// * bitmap index:          
+///     - block id:                             The ID of a block that uniquely identifies the entire block device
+///     - bitmap index:          
 ///     ** inode bitmap index:              
 ///     ** data bitmap index:
-/// * area index:
+///     - area index:
 ///     ** inode area index:
 ///     ** data area index:
 ///
@@ -59,14 +59,14 @@ impl SuperBlock {
     /// Initializing a superblock, which does not have `new` function, 
     /// is only stored or read directly by a pointer
     /// 
-    /// # Arguments
-    /// * total_blocks: the number of blocks in the block device
-    /// * inode_bitmap_blocks: the number of the blocks which storing inode block bitmaps
-    /// * inode_area_blocks: the number of the blocks which storing inode
-    /// * data_bitmap_blocks: the number of the blocks which storing raw data block bitmaps
-    /// * data_area_blocks: the number of the blocks which storing raw data
-    /// * disk_inodes: the number of the disk inode allowed to be stored
-    /// * iabc: he average block count of disk inode
+    /// - Arguments
+    ///     - total_blocks: the number of blocks in the block device
+    ///     - inode_bitmap_blocks: the number of the blocks which storing inode block bitmaps
+    ///     - inode_area_blocks: the number of the blocks which storing inode
+    ///     - data_bitmap_blocks: the number of the blocks which storing raw data block bitmaps
+    ///     - data_area_blocks: the number of the blocks which storing raw data
+    ///     - disk_inodes: the number of the disk inode allowed to be stored
+    ///     - iabc: he average block count of disk inode
     pub(crate) fn initialize(
         &mut self,
         total_blocks: u32,

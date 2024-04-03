@@ -31,11 +31,11 @@ pub struct FrontierFileSystem {
 impl FrontierFileSystem {
     /// Calculates the count of the data bitmap blocks which these blocks map all data blocks in their entirety
     ///
-    /// # Arguments
-    /// * area_blocks: the count of the area blocks
+    /// - Arguments
+    ///     - area_blocks: the count of the area blocks
     ///
-    /// # Returns
-    /// * u32: the count of the bitmap blocks
+    /// - Returns
+    ///     - u32: the count of the bitmap blocks
     fn cal_data_bitmap_blocks(data_area_blocks: u32) -> u32 {
         let bit_size = BLOCK_BIT_SIZE as u32;
         (data_area_blocks + bit_size - 1) / bit_size
@@ -43,12 +43,12 @@ impl FrontierFileSystem {
 
     /// Calculates the total disk inodes count
     ///
-    /// # Arguments
-    /// * data_area_blocks: the count of the data area blocks
-    /// * iabc: the average blocks count of disk inode
+    /// - Arguments
+    ///     - data_area_blocks: the count of the data area blocks
+    ///     - iabc: the average blocks count of disk inode
     ///
-    /// # Returns
-    /// * u32: the count of the disk inode
+    /// - Returns
+    ///     - u32: the count of the disk inode
     fn cal_disk_inodes(data_area_blocks: u32, iabc: u8) -> u32 {
         let iabc = iabc as u32;
         (data_area_blocks + iabc - 1) / iabc
@@ -56,11 +56,11 @@ impl FrontierFileSystem {
 
     /// Calculates the total blocks count of the inode area
     ///
-    /// # Arguments
-    /// * disk_inodes: the count of the disk inodes
+    /// - Arguments
+    ///     - disk_inodes: the count of the disk inodes
     ///
-    /// # Returns
-    /// * u32: the count of the inode area
+    /// - Returns
+    ///     - u32: the count of the inode area
     fn cal_inode_area_blocks(disk_inodes: u32) -> u32 {
         let count = PER_BLOCK_DISK_INODE_COUNT as u32;
         (disk_inodes + count - 1) / count
@@ -68,22 +68,22 @@ impl FrontierFileSystem {
 
     /// Calculates the total blocks count of the inode bitmap area
     ///
-    /// # Arguments
-    /// * disk_inodes: the count of the disk inodes
+    /// - Arguments
+    ///     - disk_inodes: the count of the disk inodes
     ///
-    /// # Returns
-    /// * u32: the count of the inode bitmap area
+    /// - Returns
+    ///     - u32: the count of the inode bitmap area
     fn cal_inode_bitmap_blocks(disk_inodes: u32) -> u32 {
         let bit_size = BLOCK_BIT_SIZE as u32;
         (disk_inodes + bit_size - 1) / bit_size
     }
 
     /// We can use a math function y=f(x) to calculate the recommended data blocks
-    /// * Set x = data_area_blocks
-    /// * Set y = total_blocks
-    /// * Set bbs = BLOCK_BIT_SIZE
-    /// * Set iabc = PER_INODE_AVG_BLOCK_COUNt
-    /// * Set dic = PER_BLOCK_DISK_INODE_COUNT
+    ///     - Set x = data_area_blocks
+    ///     - Set y = total_blocks
+    ///     - Set bbs = BLOCK_BIT_SIZE
+    ///     - Set iabc = PER_INODE_AVG_BLOCK_COUNt
+    ///     - Set dic = PER_BLOCK_DISK_INODE_COUNT
     ///
     /// ```text
     /// We knows that:
@@ -120,13 +120,13 @@ impl FrontierFileSystem {
     ///     x = ((y - 5) * (iabc*dic*bbs)) / ((iabc*dic*bbs) + iabc*dic + bbs + dic) + 1
     /// ```
     ///
-    /// # Arguments
-    /// * total_blocks: total count of blocks
-    /// * iabc: the average block count of disk inode
+    /// - Arguments
+    ///     - total_blocks: total count of blocks
+    ///     - iabc: the average block count of disk inode
     ///
-    /// # Returns
-    /// * None: no recommended data blocks
-    /// * Some(recommended data blocks)
+    /// - Returns
+    ///     - None: no recommended data blocks
+    ///     - Some(recommended data blocks)
     fn recommended_data_area_blocks(total_blocks: u32, iabc: u8) -> Option<u32> {
         if total_blocks < 5 {
             None
@@ -144,20 +144,17 @@ impl FrontierFileSystem {
 
     /// Calculates the recommended blocks area structure
     ///
-    /// # Arguments
-    /// * total_blocks: The total number of blocks in blocks device
-    /// * iabc: the average block count of disk inode
+    /// - Arguments
+    ///     - total_blocks: The total number of blocks in blocks device
+    ///     - iabc: the average block count of disk inode
     ///
-    /// # Returns
-    /// * Some((
-    ///     u32: inode bitmap blocks,
-    ///     u32: inode area blocks,
-    ///     u32: data bitmap blocks,
-    ///     u32: data area blocks,
-    ///     u32: used total blocks,
-    ///     u32: disk inodes
-    /// ))
-    /// * None
+    /// - Returns
+    ///     - inode bitmap blocks,
+    ///     - inode area blocks,
+    ///     - data bitmap blocks,
+    ///     - data area blocks,
+    ///     - used total blocks,
+    ///     - disk inodes
     fn recommended_blocks_structure(
         total_blocks: u32,
         iabc: u8,
@@ -193,19 +190,17 @@ impl FrontierFileSystem {
 
     /// Calculates the blocks area structure according to the total bytes size
     ///
-    /// # Arguments
-    /// * total_byte_size: The bytes size of the data will be written to the device
-    /// * iabc: the average block count of disk inode
+    /// - Arguments
+    ///     - total_byte_size: The bytes size of the data will be written to the device
+    ///     - iabc: the average block count of disk inode
     ///
-    /// # Returns
-    /// (
-    ///     u32: inode bitmap blocks,
-    ///     u32: inode area blocks,
-    ///     u32: data bitmap blocks,
-    ///     u32: data area blocks,
-    ///     u32: used total blocks,
-    ///     u32: disk inodes
-    /// )
+    /// - Returns
+    ///     - inode bitmap blocks,
+    ///     - inode area blocks,
+    ///     - data bitmap blocks,
+    ///     - data area blocks,
+    ///     - used total blocks,
+    ///     - disk inodes
     fn fix_blocks_structure(total_byte_size: u64, iabc: u8) -> (u32, u32, u32, u32, u32, u32) {
         let block_byte_size = BLOCK_BIT_SIZE as u64;
         let data_area_blocks = ((total_byte_size + block_byte_size - 1) / block_byte_size) as u32;
@@ -225,14 +220,12 @@ impl FrontierFileSystem {
 
     /// Calculates the disk inode's position by the bitmap index of the inode.
     ///
-    /// # Arguments
-    /// * inode_bitmap_index: the bitmap index of the disk inode
+    /// - Arguments
+    ///     - inode_bitmap_index: the bitmap index of the disk inode
     ///
-    /// # Returns
-    /// (
-    ///     u32: the block id of the disk inode,
-    ///     usize: the offset of the disk inode in the block
-    /// )
+    /// - Returns
+    ///     - the block id of the disk inode,
+    ///     - the offset of the disk inode in the block
     pub(crate) fn cal_disk_inode_position(&self, inode_bitmap_index: u32) -> (u32, usize) {
         (
             self.inode_area_start_block_id
@@ -243,21 +236,24 @@ impl FrontierFileSystem {
 
     /// Allocate an unused disk inode from bitmap and return the bitmap index
     ///
-    /// # Returns
-    /// * Ok(inode bitmap index)
-    /// * Err(BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - BitmapExhausted(start_block_id) 
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     pub(crate) fn alloc_inode_bitmap_index(&mut self) -> Result<u32> {
         Ok(self.inode_bitmap.alloc(&self.tracker)? as u32)
     }
 
     /// Deallocate an used disk inode back to bitmap
     ///
-    /// # Arguments
-    /// * inode_bitmap_index: inode bitmap index to deallocate
+    /// - Arguments
+    ///     - inode_bitmap_index: inode bitmap index to deallocate
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds
+    ///     - BitmapIndexDeallocated(bitmap_index) 
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     pub(crate) fn dealloc_inode_bitmap_index(&mut self, inode_bitmap_index: u32) -> Result<()> {
         self.inode_bitmap
             .dealloc(&self.tracker, inode_bitmap_index as usize)
@@ -265,8 +261,11 @@ impl FrontierFileSystem {
 
     /// Allocate an unused data block from bitmap an return the bitmap index
     ///
-    /// # Returns
-    /// * Err(DataOutOfBounds | BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds 
+    ///     - BitmapExhausted(start_block_id)
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     pub(crate) fn alloc_data_block_id(&mut self) -> Result<u32> {
         let data_block_id =
             self.data_bitmap.alloc(&self.tracker)? as u32 + self.data_area_start_block_id;
@@ -294,12 +293,14 @@ impl FrontierFileSystem {
     /// in order to prevent an error from being reported during the block application process,
     /// some of the blocks that have been applied for will not be collected.
     ///
-    /// # Arguments
-    /// * blocks_needed: The count of blocks will be allocated
+    /// - Arguments
+    ///     - blocks_needed: The count of blocks will be allocated
     ///
-    /// # Returns
-    /// * Ok(Vec<block id>)
-    /// * Err(DataOutOfBounds | BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds 
+    ///     - BitmapExhausted(start_block_id)
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     pub(crate) fn bulk_alloc_data_block_ids(&mut self, blocks_needed: u32) -> Result<Vec<u32>> {
         let mut data_block_ids = Vec::new();
         for _ in 0..blocks_needed {
@@ -317,12 +318,14 @@ impl FrontierFileSystem {
 
     /// Deallocate an used data block to bitmap
     ///
-    /// # Arguments
-    /// * data_block_id: data block id to deallocate
-    ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Arguments
+    ///     - data_block_id: data block id to deallocate
+    /// 
+    /// - Errors
+    ///     - DataOutOfBounds 
+    ///     - BitmapIndexDeallocated(bitmap_index)
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     pub(crate) fn dealloc_data_block_id(&mut self, data_block_id: u32) -> Result<()> {
         self.data_bitmap.dealloc(
             &self.tracker,
@@ -332,12 +335,14 @@ impl FrontierFileSystem {
 
     /// Deallocate multiple blocks to bitmap and clear all data in the blocks
     ///
-    /// # Arguments
-    /// * data_block_ids: vector of block IDs to deallocate
+    /// - Arguments
+    ///     - data_block_ids: vector of block IDs to deallocate
     ///
-    /// # Returns
-    /// * Ok(())
-    /// * Err(DataOutOfBounds | BitmapIndexDeallocated(bitmap_index) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - DataOutOfBounds 
+    ///     - BitmapIndexDeallocated(bitmap_index)
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     pub(crate) fn bulk_dealloc_data_block_ids(&mut self, data_block_ids: Vec<u32>) -> Result<()> {
         for block_id in data_block_ids {
             self.dealloc_data_block_id(block_id)?
@@ -347,13 +352,13 @@ impl FrontierFileSystem {
 
     /// Just create a new File System structure, this function will do nothing with block device
     ///
-    /// # Arguments:
-    /// * tracker: the tracker for the block device which was mounted
-    /// * inode_bitmap_blocks: the count of the blocks contains the data of the inode bitmap
-    /// * inode_area_blocks: the count of the blocks contains the data of the disk inodes
-    /// * data_bitmap_blocks: the count of the blocks contains the data of the data bitmap
-    /// * data_area_blocks: the count of the blocks contains the original data
-    /// * disk_inodes: the count of the disk inodes can be used in this file system
+    /// - Arguments:
+    ///     - tracker: the tracker for the block device which was mounted
+    ///     - inode_bitmap_blocks: the count of the blocks contains the data of the inode bitmap
+    ///     - inode_area_blocks: the count of the blocks contains the data of the disk inodes
+    ///     - data_bitmap_blocks: the count of the blocks contains the data of the data bitmap
+    ///     - data_area_blocks: the count of the blocks contains the original data
+    ///     - disk_inodes: the count of the disk inodes can be used in this file system
     pub fn new(
         tracker: &Arc<BlockDeviceTracker>,
         inode_bitmap_blocks: u32,
@@ -411,19 +416,22 @@ impl FileSystem for FS {
     }
 
     /// Initialize a new instance of the file system.
-    /// * First: calculates the most recommended block distribution
-    /// * Second: clear all usable blocks in the block device
-    /// * third: write the block distribution in super block to the block device's first block
-    /// * fourth: allocate the first disk inode as the root directory `/`
+    ///     - First: calculates the most recommended block distribution
+    ///     - Second: clear all usable blocks in the block device
+    ///     - third: write the block distribution in super block to the block device's first block
+    ///     - fourth: allocate the first disk inode as the root directory `/`
     ///
-    /// # Arguments
-    /// * total_blocks: the total count of the blocks can be used
-    /// * iabc: the avarage block count of the inode
-    /// * tracker: the tracker for the block device which was mounted
+    /// - Arguments
+    ///     - total_blocks: the total count of the blocks can be used
+    ///     - iabc: the avarage block count of the inode
+    ///     - tracker: the tracker for the block device which was mounted
     ///
-    /// # Returns
-    /// * Ok(Box<Arc<Mutex<FrontierFileSystem>>>)
-    /// * Err(NoEnoughBlocks | DataOutOfBounds | BitmapExhausted(start_block_id) | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - NoEnoughBlocks 
+    ///     - DataOutOfBounds 
+    ///     - BitmapExhausted(start_block_id) 
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     fn initialize(
         mode: InitMode,
         iabc: u8,
@@ -494,12 +502,14 @@ impl FileSystem for FS {
     /// Open an initialized block device as the file system by the block distribution in super block,
     /// which super block is stored in the first block in the block device.
     ///
-    /// # Arguments
-    /// * tracker: the tracker for the block device which was mounted
+    /// - Arguments
+    ///     - tracker: the tracker for the block device which was mounted
     ///
-    /// # Returns
-    /// * Ok(Box<Arc<Mutex<FrontierFileSystem>>>)
-    /// * Err(NotValidBlockDeviceData | DataOutOfBounds | NoDroptableBlockCache | RawDeviceError(error code))
+    /// - Errors
+    ///     - NotValidBlockDeviceData 
+    ///     - DataOutOfBounds 
+    ///     - NoDroptableBlockCache 
+    ///     - RawDeviceError(error code)
     fn open(tracker: &Arc<BlockDeviceTracker>) -> Result<Box<Self>> {
         BLOCK_CACHE_MANAGER
             .lock()
