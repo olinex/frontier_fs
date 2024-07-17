@@ -63,7 +63,7 @@ impl BlockDeviceTracker {
     }
 
     /// Get the unique device number
-    pub(crate) fn device_id(&self) -> usize {
+    pub fn device_id(&self) -> usize {
         self.device_id
     }
 }
